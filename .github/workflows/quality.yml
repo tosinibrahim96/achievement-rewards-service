@@ -1,0 +1,41 @@
+name: Quality
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Docker quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build development and web images
+        run: docker compose build app nginx
+
+      - name: Set up application and databases
+        run: docker compose --profile tools run --rm setup
+
+      - name: Start complete application stack
+        run: docker compose up -d nginx horizon scheduler
+
+      - name: Verify HTTP health
+        run: docker compose exec -T nginx wget --quiet --tries=12 --spider http://127.0.0.1/up
+
+      - name: Run quality gate
+        run: docker compose run --rm app composer quality
+
+      - name: Show container logs after a failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down test environment
+        if: always()
+        run: docker compose down --volumes --remove-orphans
