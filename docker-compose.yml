@@ -1,0 +1,103 @@
+name: achievement-rewards-service
+
+x-application: &application
+  image: achievement-rewards-service:development
+  build:
+    context: .
+    target: development
+  working_dir: /var/www/html
+  init: true
+  volumes:
+    - .:/var/www/html
+    - vendor:/var/www/html/vendor
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  nginx:
+    image: achievement-rewards-service-nginx:development
+    build:
+      context: .
+      target: nginx
+    ports:
+      - "${APP_PORT:-8000}:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+
+  app:
+    <<: *application
+    command: php-fpm
+    healthcheck:
+      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 9000) ? 0 : 1);'"]
+      interval: 10s
+      timeout: 3s
+      start_period: 20s
+      retries: 5
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  postgres:
+    image: postgres:17.10-alpine3.22
+    environment:
+      POSTGRES_DB: achievement_rewards
+      POSTGRES_USER: achievement_rewards
+      POSTGRES_PASSWORD: local_password
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./docker/postgres/init-test-database.sql:/docker-entrypoint-initdb.d/init-test-database.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U achievement_rewards -d achievement_rewards"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4.10-alpine3.21
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  horizon:
+    <<: *application
+    command: php artisan horizon
+    healthcheck:
+      test: ["CMD", "php", "artisan", "horizon:status"]
+      interval: 15s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+    restart: unless-stopped
+    stop_grace_period: 60s
+
+  scheduler:
+    <<: *application
+    command: php artisan schedule:work
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+
+  setup:
+    <<: *application
+    profiles: ["tools"]
+    command: ./docker/bin/setup
+    healthcheck:
+      disable: true
+    restart: "no"
+
+volumes:
+  postgres-data:
+  redis-data:
+  vendor:

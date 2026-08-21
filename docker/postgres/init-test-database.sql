@@ -1,0 +1,1 @@
+CREATE DATABASE achievement_rewards_test;
