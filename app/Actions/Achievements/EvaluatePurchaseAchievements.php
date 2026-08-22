@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace App\Actions\Achievements;
 
 use App\Domain\Achievements\AchievementProgressRegistry;
-use App\Enums\AchievementMetric;
 use App\Models\Achievement;
 use App\Models\AchievementGroup;
 use App\Models\Purchase;
@@ -25,7 +24,6 @@ final readonly class EvaluatePurchaseAchievements
             $user = User::query()->lockForUpdate()->findOrFail($purchase->user_id);
             $groups = AchievementGroup::query()
                 ->where('is_active', true)
-                ->where('metric', AchievementMetric::PurchaseCount)
                 ->orderBy('sort_order')
                 ->orderBy('id')
                 ->get();

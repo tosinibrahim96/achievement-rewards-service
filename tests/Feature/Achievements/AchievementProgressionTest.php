@@ -69,6 +69,48 @@ it('unlocks every reached purchase count milestone once', function (int $count, 
     ]],
 ]);
 
+it('does not unlock a lifetime spend achievement below its first threshold', function (): void {
+    $user = User::factory()->create();
+
+    recordQualifyingPurchase($user, 'ORDER-SPEND-BELOW', 499_999);
+
+    expect(unlockedCodesFor($user))->toBe(['first-purchase']);
+});
+
+it('unlocks a lifetime spend achievement at the exact threshold', function (): void {
+    $user = User::factory()->create();
+
+    recordQualifyingPurchase($user, 'ORDER-SPEND-EXACT', 500_000);
+
+    expect(unlockedCodesFor($user))->toBe(['first-purchase', 'five-thousand-spent']);
+});
+
+it('accumulates integer minor units across completed purchases', function (): void {
+    $user = User::factory()->create();
+
+    recordQualifyingPurchase($user, 'ORDER-SPEND-PART-1', 300_000);
+    recordQualifyingPurchase($user, 'ORDER-SPEND-PART-2', 700_000);
+
+    expect(unlockedCodesFor($user))->toBe([
+        'first-purchase',
+        'five-thousand-spent',
+        'ten-thousand-spent',
+    ]);
+});
+
+it('unlocks every crossed spend threshold in deterministic order', function (): void {
+    $user = User::factory()->create();
+
+    recordQualifyingPurchase($user, 'ORDER-SPEND-LARGE', 2_500_000);
+
+    expect(unlockedCodesFor($user))->toBe([
+        'first-purchase',
+        'five-thousand-spent',
+        'ten-thousand-spent',
+        'twenty-five-thousand-spent',
+    ]);
+});
+
 it('ignores inactive achievement definitions', function (): void {
     $user = User::factory()->create();
     Achievement::query()->where('code', 'first-purchase')->update(['is_active' => false]);
