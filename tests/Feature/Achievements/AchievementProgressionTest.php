@@ -6,6 +6,7 @@ use App\Actions\Purchases\RecordPurchase;
 use App\Data\Purchases\RecordPurchaseInput;
 use App\Domain\Money\Money;
 use App\Enums\Currency;
+use App\Events\PurchaseCompleted;
 use App\Models\Achievement;
 use App\Models\AchievementGroup;
 use App\Models\Purchase;
@@ -127,4 +128,15 @@ it('ignores inactive achievement groups', function (): void {
     recordQualifyingPurchase($user, 'ORDER-INACTIVE-GROUP', 1);
 
     expect(unlockedCodesFor($user))->toBe([]);
+});
+
+it('does not duplicate unlocks when a purchase event is redelivered', function (): void {
+    $user = User::factory()->create();
+    $purchase = recordQualifyingPurchase($user, 'ORDER-REDELIVERY', 500_000);
+    $initialIds = UserAchievement::query()->whereBelongsTo($user)->orderBy('id')->pluck('id')->all();
+
+    PurchaseCompleted::dispatch($purchase);
+
+    expect(UserAchievement::query()->whereBelongsTo($user)->orderBy('id')->pluck('id')->all())
+        ->toBe($initialIds);
 });

@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project currently includes its Docker-based infrastructure foundation and customer authentication. Achievement, badge, and cashback domain features are implemented in later milestones.
+The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, and purchase-driven achievement unlocking. Achievement events, badge evaluation, cashback, payment behavior, and the customer achievement endpoint remain later milestones.
 
 ## Prerequisite
 
@@ -94,7 +94,7 @@ Customer tokens receive only these abilities:
 - `payout-accounts:write`
 - `cashback-rewards:read`
 
-The reserved `purchases:write` ability is never issued by public registration or login. It belongs to trusted system identities created through the later internal demo/setup workflow.
+The reserved `purchases:write` ability is never issued by public registration or login. It belongs to trusted system identities provisioned administratively; a repeatable internal demo/setup workflow is a later milestone.
 
 The Sanctum guard is explicitly restricted to the `users` provider. This still accepts both customer and system `User` identities while preventing an unrelated tokenable model from becoming valid accidentally. Logout is bearer-only: it revokes only the persisted personal access token used for the request, returns an empty `204 No Content`, and leaves other tokens valid. For logout, missing, revoked, or session/transient authentication receives `401`.
 
@@ -123,6 +123,79 @@ Each request receives a server-generated request ID for logs and the `X-Request-
 Malformed or missing login fields return `422 validation_failed` with field-level `errors`. A syntactically valid login with an unknown email, wrong password, or system identity returns the same `401 invalid_credentials` body without an `errors` object, so clients are not told that the email field itself is invalid and account existence is not disclosed. `WWW-Authenticate: Bearer` is reserved for protected endpoints that actually require an existing bearer token.
 
 The setup command is safe to rerun. It installs the locked dependencies and applies only outstanding migrations.
+
+## Purchase-driven achievements
+
+Only completed purchases are stored. The service deliberately has no pending/failed purchase states and no product, cart, inventory, or checkout model: a trusted upstream checkout system sends a completed fact after its own payment flow succeeds. Purchases are currently restricted to NGN and monetary values use integer minor units (kobo), never floating point.
+
+Two active progressions are seeded idempotently:
+
+| Group | Achievement thresholds |
+| --- | --- |
+| Purchase count | First Purchase (1), 3 Purchases (3), 5 Purchases (5), 10 Purchases (10), 25 Purchases (25) |
+| Lifetime NGN spend | NGN 5,000 (500,000 kobo), NGN 10,000 (1,000,000), NGN 25,000 (2,500,000), NGN 50,000 (5,000,000), NGN 100,000 (10,000,000) |
+
+The four future badge definitions—Beginner at 1 achievement, Intermediate at 4, Advanced at 8, and Master at 10—are also seeded, but Task 1 does not evaluate or award badges. The future badge cashback rule is version controlled in `config/rewards.php` as `30000` kobo in NGN.
+
+### Trusted ingestion contract
+
+`POST /api/internal/purchases` requires all of the following:
+
+- a valid Sanctum bearer token;
+- the reserved `purchases:write` token ability;
+- an authenticated `system` account rather than a customer account; and
+- the per-system-identity limit of 120 requests per minute.
+
+System identities and their narrowly scoped tokens are provisioned administratively; public registration and login never issue `purchases:write`.
+
+```bash
+curl --request POST http://localhost:8000/api/internal/purchases \
+  --header 'Accept: application/json' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer <system-token>' \
+  --data '{
+    "user_id": 42,
+    "external_reference": "ORDER-10042",
+    "amount_minor": 2500000,
+    "currency": "NGN",
+    "completed_at": "2026-08-21T14:30:00Z"
+  }'
+```
+
+A new purchase returns `201 Created`:
+
+```json
+{
+  "purchase": {
+    "id": 73,
+    "user_id": 42,
+    "external_reference": "ORDER-10042",
+    "amount_minor": 2500000,
+    "currency": "NGN",
+    "completed_at": "2026-08-21T14:30:00.000000Z"
+  },
+  "was_duplicate": false
+}
+```
+
+The external reference is the idempotency key. An identical replay returns the same purchase with `200 OK` and `was_duplicate: true`; it creates no second event or unlock activity. Reusing the reference with a different customer, amount, or completion time returns `409 purchase_reference_conflict`. The internal workflow correlation ID is persisted but not exposed in the API response.
+
+### Asynchronous progression flow
+
+```text
+trusted POST
+    -> validate and normalize input
+    -> transactionally insert one completed purchase
+    -> dispatch PurchaseCompleted after commit
+    -> queued listener, serialized per user by a short Redis lock
+    -> PostgreSQL transaction locks that user's row
+    -> purchase-count and lifetime-NGN-spend calculators run
+    -> every newly crossed active threshold is inserted in order
+```
+
+The evaluator may unlock several thresholds for one large purchase. A unique `(user_id, achievement_id)` database constraint is the final duplicate defense; the Redis overlap lock and PostgreSQL user-row lock serialize normal competing work and reduce contention. Redelivered events remain safe. `AchievementUnlocked` is intentionally deferred to Task 2, so Task 1 stops after persisting `user_achievements`.
+
+Achievement unlocks are permanent in the current scope. Refund ingestion, revocation, badge awards, cashback records, and payment execution are not part of this milestone.
 
 ## Daily operation
 
@@ -191,6 +264,22 @@ Use the mutating formatter only when intentionally fixing style:
 
 ```bash
 docker compose run --rm app composer lint:fix
+```
+
+Inspect and verify the Task 1 wiring:
+
+```bash
+docker compose run --rm app php artisan route:list --path=api/internal/purchases
+docker compose run --rm app php artisan event:list
+docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Concurrency
+docker compose run --rm app composer quality
+```
+
+For a disposable local database, the following command proves that the schema and seeders work from an empty state and remain safe to rerun. It deletes all data in the configured local database:
+
+```bash
+docker compose run --rm app php artisan migrate:fresh --seed --force
+docker compose run --rm app php artisan db:seed --force
 ```
 
 ## Services
