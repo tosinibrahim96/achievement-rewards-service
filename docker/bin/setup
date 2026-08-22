@@ -6,13 +6,42 @@ if [ ! -f .env ]; then
     cp .env.example .env
 fi
 
-composer install --no-interaction --no-progress --prefer-dist
+project_uid="$(stat -c '%u' .)"
+project_gid="$(stat -c '%g' .)"
 
-if grep -Eq '^APP_KEY=$' .env; then
-    php artisan key:generate --force --ansi
+if [ "$project_uid" -eq 0 ] || [ "$project_gid" -eq 0 ]; then
+    project_uid=1000
+    project_gid=1000
 fi
 
-php artisan optimize:clear --ansi
-php artisan migrate --seed --force --ansi
+set_environment_value() {
+    key="$1"
+    value="$2"
+
+    if grep -q "^${key}=" .env; then
+        sed -i "s/^${key}=.*/${key}=${value}/" .env
+    else
+        printf '\n%s=%s\n' "$key" "$value" >> .env
+    fi
+}
+
+set_environment_value DOCKER_APP_UID "$project_uid"
+set_environment_value DOCKER_APP_GID "$project_gid"
+
+mkdir -p vendor bootstrap/cache storage .phpunit.cache
+chown -R "$project_uid:$project_gid" .env vendor bootstrap/cache storage .phpunit.cache
+
+run_as_application_user() {
+    HOME=/tmp COMPOSER_HOME=/tmp/composer su-exec "$project_uid:$project_gid" "$@"
+}
+
+run_as_application_user composer install --no-interaction --no-progress --prefer-dist
+
+if grep -Eq '^APP_KEY=$' .env; then
+    run_as_application_user php artisan key:generate --force --ansi
+fi
+
+run_as_application_user php artisan optimize:clear --ansi
+run_as_application_user php artisan migrate --seed --force --ansi
 
 echo "Application setup complete. Start the stack with: docker compose up -d"

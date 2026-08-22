@@ -76,7 +76,7 @@ RUN apk add --no-cache --virtual .xdebug-build-dependencies \
     && pecl install xdebug-${XDEBUG_VERSION} \
     && docker-php-ext-enable xdebug \
     && apk del .xdebug-build-dependencies \
-    && apk add --no-cache git \
+    && apk add --no-cache git su-exec \
     && git config --system --add safe.directory /var/www/html
 
 COPY --from=composer /usr/bin/composer /usr/bin/composer

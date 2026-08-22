@@ -6,7 +6,11 @@ x-application: &application
     context: .
     target: development
   working_dir: /var/www/html
+  user: "${DOCKER_APP_UID:-1000}:${DOCKER_APP_GID:-1000}"
   init: true
+  environment:
+    COMPOSER_HOME: /tmp/composer
+    HOME: /tmp
   volumes:
     - .:/var/www/html
   depends_on:
@@ -93,6 +97,7 @@ services:
   setup:
     <<: *application
     profiles: ["tools"]
+    user: root
     command: ./docker/bin/setup
     healthcheck:
       disable: true

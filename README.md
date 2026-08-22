@@ -34,7 +34,7 @@ The application is then available at <http://localhost:8000>. A successful respo
 }
 ```
 
-The setup command is safe to rerun. Composer runs inside Docker and installs the locked dependencies into the local, Git-ignored `vendor/` directory so editors can index Laravel and package classes. PHP and Composer are still not required on the host. The command applies only outstanding migrations and does not run migrations from every long-running container at startup.
+The setup command is safe to rerun. It installs the locked dependencies and applies only outstanding migrations.
 
 ## Daily operation
 
