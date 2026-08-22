@@ -17,7 +17,7 @@ docker compose version
 
 ## First-time setup
 
-Build the development image, create the local environment file, generate the application key, and migrate PostgreSQL:
+Build the development image, install PHP dependencies, create the local environment file, generate the application key, and migrate PostgreSQL:
 
 ```bash
 docker compose build
@@ -34,7 +34,7 @@ The application is then available at <http://localhost:8000>. A successful respo
 }
 ```
 
-The setup command is safe to rerun. It installs the locked Composer dependencies and applies only outstanding migrations. It does not run migrations from every long-running container at startup.
+The setup command is safe to rerun. Composer runs inside Docker and installs the locked dependencies into the local, Git-ignored `vendor/` directory so editors can index Laravel and package classes. PHP and Composer are still not required on the host. The command applies only outstanding migrations and does not run migrations from every long-running container at startup.
 
 ## Daily operation
 
@@ -51,7 +51,7 @@ docker compose ps
 docker compose exec nginx wget --quiet --spider http://127.0.0.1/up
 ```
 
-Stop the services while retaining PostgreSQL, Redis, and Composer dependency volumes:
+Stop the services while retaining PostgreSQL and Redis volumes. The local `vendor/` directory also remains available for the editor:
 
 ```bash
 docker compose down
@@ -61,6 +61,27 @@ To change the host HTTP port, set `APP_PORT` for the Compose command:
 
 ```bash
 APP_PORT=8080 docker compose up -d
+```
+
+## Database tools
+
+PostgreSQL is available to database clients on the host loopback interface only. For TablePlus or another database client, use:
+
+| Setting | Value |
+| --- | --- |
+| Host | `127.0.0.1` |
+| Port | `5433` |
+| User | `achievement_rewards` |
+| Password | `local_password` |
+| Database | `achievement_rewards` |
+| SSL | disabled |
+
+Laravel containers continue to connect through `postgres:5432` on the private Compose network. The host port exists only for local development tools and is not reachable through the Mac's LAN address.
+
+If host port `5433` is already occupied, change `POSTGRES_HOST_PORT` in `.env` and recreate the PostgreSQL container:
+
+```bash
+docker compose up -d --force-recreate postgres
 ```
 
 ## Tests and quality
@@ -109,7 +130,7 @@ docker compose exec app php artisan migrate:status
 
 ## Resetting local infrastructure
 
-This removes local PostgreSQL, Redis, and dependency volumes. It is destructive to local development data:
+This removes the local PostgreSQL and Redis volumes. It is destructive to local development data, but it does not delete the Git-ignored `vendor/` directory:
 
 ```bash
 docker compose down --volumes
