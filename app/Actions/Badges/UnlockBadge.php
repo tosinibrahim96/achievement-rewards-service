@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Badges;
 
+use App\Events\BadgeUnlocked;
 use App\Models\Badge;
 use App\Models\User;
 use App\Models\UserAchievement;
@@ -25,6 +26,12 @@ final readonly class UnlockBadge
             ],
         );
 
-        return $userBadge->wasRecentlyCreated ? $userBadge : null;
+        if (! $userBadge->wasRecentlyCreated) {
+            return null;
+        }
+
+        BadgeUnlocked::dispatch($badge->name, $user);
+
+        return $userBadge;
     }
 }
