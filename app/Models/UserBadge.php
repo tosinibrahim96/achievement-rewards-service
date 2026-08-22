@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * @property int $id
@@ -21,6 +22,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property-read User $user
  * @property-read Badge $badge
  * @property-read UserAchievement|null $triggeringAchievement
+ * @property-read CashbackReward|null $cashbackReward
  */
 #[Fillable(['user_id', 'badge_id', 'triggered_by_user_achievement_id', 'correlation_id', 'unlocked_at'])]
 class UserBadge extends Model
@@ -44,6 +46,12 @@ class UserBadge extends Model
     public function triggeringAchievement(): BelongsTo
     {
         return $this->belongsTo(UserAchievement::class, 'triggered_by_user_achievement_id');
+    }
+
+    /** @return HasOne<CashbackReward, $this> */
+    public function cashbackReward(): HasOne
+    {
+        return $this->hasOne(CashbackReward::class);
     }
 
     /** @return array<string, string> */

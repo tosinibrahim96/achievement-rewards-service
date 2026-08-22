@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Actions\Badges\EvaluateBadges;
 use App\Events\BadgeUnlocked;
+use App\Models\CashbackReward;
 use App\Models\User;
 use App\Models\UserBadge;
 use Database\Seeders\AchievementCatalogueSeeder;
@@ -51,7 +52,7 @@ it('dispatches BadgeUnlocked only after the surrounding transaction commits', fu
     Event::assertDispatchedTimes(BadgeUnlocked::class, 1);
 });
 
-it('rolls back the badge and event together', function (): void {
+it('rolls back the badge reward and event together', function (): void {
     Event::fake([BadgeUnlocked::class]);
     $user = User::factory()->create();
     BadgeTestData::giveAchievements($user, 1);
@@ -66,7 +67,8 @@ it('rolls back the badge and event together', function (): void {
         // The rollback is the behaviour under test.
     }
 
-    expect(UserBadge::query()->count())->toBe(0);
+    expect(UserBadge::query()->count())->toBe(0)
+        ->and(CashbackReward::query()->count())->toBe(0);
     Event::assertNotDispatched(BadgeUnlocked::class);
 });
 
