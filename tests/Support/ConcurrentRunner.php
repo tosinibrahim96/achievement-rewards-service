@@ -6,6 +6,7 @@ namespace Tests\Support;
 
 use Closure;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Redis;
 use RuntimeException;
 use Throwable;
 
@@ -86,6 +87,8 @@ final class ConcurrentRunner
         fclose($parentSocket);
         fread($childSocket, 1);
         DB::purge();
+        Redis::purge('default');
+        Redis::purge('cache');
 
         try {
             $callback();

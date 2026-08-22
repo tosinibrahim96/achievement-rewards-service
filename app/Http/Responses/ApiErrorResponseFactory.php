@@ -4,7 +4,11 @@ declare(strict_types=1);
 
 namespace App\Http\Responses;
 
+use App\Enums\PaymentProviderFailure;
 use App\Exceptions\Auth\InvalidCredentialsException;
+use App\Exceptions\Payments\PaymentProviderException;
+use App\Exceptions\Payouts\PayoutAccountBusyException;
+use App\Exceptions\Payouts\PayoutAccountConflictException;
 use App\Exceptions\Purchases\PurchaseReferenceConflictException;
 use App\Http\Middleware\AssignRequestId;
 use Illuminate\Auth\AuthenticationException;
@@ -74,6 +78,47 @@ final readonly class ApiErrorResponseFactory
                 'The external reference is already associated with a different purchase.',
                 'purchase_reference_conflict',
             ];
+        }
+
+        if ($exception instanceof PayoutAccountBusyException) {
+            return [
+                Response::HTTP_CONFLICT,
+                'Another payout account update is already in progress.',
+                'payout_account_busy',
+            ];
+        }
+
+        if ($exception instanceof PayoutAccountConflictException) {
+            return [
+                Response::HTTP_CONFLICT,
+                'The payout account conflicts with an existing destination.',
+                'payout_account_conflict',
+            ];
+        }
+
+        if ($exception instanceof PaymentProviderException) {
+            return match ($exception->failure) {
+                PaymentProviderFailure::RecipientRejected => [
+                    Response::HTTP_UNPROCESSABLE_ENTITY,
+                    'The payout account could not be verified.',
+                    'payout_account_rejected',
+                ],
+                PaymentProviderFailure::Unavailable => [
+                    Response::HTTP_SERVICE_UNAVAILABLE,
+                    'The payout account provider is temporarily unavailable.',
+                    'payment_provider_unavailable',
+                ],
+                PaymentProviderFailure::MalformedResponse => [
+                    Response::HTTP_BAD_GATEWAY,
+                    'The payout account provider returned an invalid response.',
+                    'payment_provider_invalid_response',
+                ],
+                PaymentProviderFailure::Timeout => [
+                    Response::HTTP_GATEWAY_TIMEOUT,
+                    'The payout account provider did not respond in time.',
+                    'payment_provider_timeout',
+                ],
+            };
         }
 
         if ($exception instanceof AuthenticationException) {
