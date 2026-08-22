@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Responses;
 
 use App\Exceptions\Auth\InvalidCredentialsException;
+use App\Exceptions\Purchases\PurchaseReferenceConflictException;
 use App\Http\Middleware\AssignRequestId;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Http\JsonResponse;
@@ -64,6 +65,14 @@ final readonly class ApiErrorResponseFactory
                 Response::HTTP_UNPROCESSABLE_ENTITY,
                 'One or more fields are invalid.',
                 'validation_failed',
+            ];
+        }
+
+        if ($exception instanceof PurchaseReferenceConflictException) {
+            return [
+                Response::HTTP_CONFLICT,
+                'The external reference is already associated with a different purchase.',
+                'purchase_reference_conflict',
             ];
         }
 

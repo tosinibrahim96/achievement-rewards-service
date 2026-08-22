@@ -2,7 +2,9 @@
 
 declare(strict_types=1);
 
+use App\Enums\TokenAbility;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\PurchaseController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('auth')->name('auth.')->group(function (): void {
@@ -18,3 +20,12 @@ Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/auth/logout', [AuthController::class, 'logout'])->name('auth.logout');
     Route::get('/me', [AuthController::class, 'me'])->name('me');
 });
+
+Route::post('/internal/purchases', [PurchaseController::class, 'store'])
+    ->middleware([
+        'auth:sanctum',
+        'abilities:'.TokenAbility::PurchasesWrite->value,
+        'system-account',
+        'throttle:purchase-ingestion',
+    ])
+    ->name('internal.purchases.store');
