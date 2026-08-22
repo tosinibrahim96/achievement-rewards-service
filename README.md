@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, and durable cashback reward entitlements. Payout accounts, payment execution, provider integration, and the customer achievement endpoint remain later milestones.
+The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback reward entitlements, and verified/masked payout-account onboarding through a deterministic fake provider. Cashback payment execution, the real Paystack adapter, reliability/recovery, and the customer achievement endpoint remain later milestones.
 
 ## Prerequisite
 
@@ -124,6 +124,59 @@ Malformed or missing login fields return `422 validation_failed` with field-leve
 
 The setup command is safe to rerun. It installs the locked dependencies and applies only outstanding migrations.
 
+## Payout account onboarding
+
+An authenticated customer can create or replace their own transfer destination:
+
+```text
+PUT /api/me/payout-account
+```
+
+The route requires a valid Sanctum bearer token with `payout-accounts:write`. It also requires a `customer` identity and applies the payout-account ownership policy; a `system` identity is rejected even if its token contains that ability. The route never accepts a customer ID, so one customer cannot select another customer's destination. Provider-backed updates are limited to five attempts per minute for each authenticated customer.
+
+The request accepts exactly two string fields. Keeping the account number as a string preserves leading zeros:
+
+```bash
+curl --request PUT http://localhost:8000/api/me/payout-account \
+  --header 'Accept: application/json' \
+  --header 'Content-Type: application/json' \
+  --header 'Authorization: Bearer <customer-token>' \
+  --data '{
+    "account_number": "0000000000",
+    "bank_code": "057"
+  }'
+```
+
+The first verified destination returns `201 Created`; a successful replacement updates the same current row and returns `200 OK`. Both statuses use the same root-level response:
+
+```json
+{
+  "id": 42,
+  "provider": "fake",
+  "account_name": "Demo Customer",
+  "bank_name": "Demo Bank",
+  "bank_code": "057",
+  "masked_account_number": "******0000",
+  "currency": "NGN",
+  "verified_at": "2026-08-22T18:30:00.000000Z"
+}
+```
+
+`account_name` is canonical provider output, not accepted customer input. The service uses the full account number only while creating the provider recipient, then discards it. The database stores the provider recipient code and last four digits; the API never returns the full number, raw last-four source field, user ID, recipient code, provider payload, or diagnostics.
+
+Replacement is fail-safe. A bounded per-customer Redis lock serializes ordinary competing requests. The new provider recipient is created before a short PostgreSQL transaction locks the customer and replaces the current row. Provider rejection or local rollback leaves the previous verified destination unchanged, while database uniqueness remains the durable one-account rule. `PayoutAccountVerified` is dispatched only after a successful commit and carries only the persisted payout-account model.
+
+The default and CI-safe adapter is selected with:
+
+```dotenv
+PAYMENT_DRIVER=fake
+FAKE_PAYOUT_ACCOUNT_SCENARIO=success
+```
+
+Supported payout-account fake scenarios are `success` and `rejected`. The fake derives a deterministic internal recipient identity without storing the full account number. Setting `PAYMENT_DRIVER=paystack` before the later Paystack adapter exists fails safely; it never falls back to fake or reinterprets an existing stored account. Changing the default alone changes no persisted destination—only a successful replacement stores a new provider.
+
+Expected recipient rejection returns sanitized `422 payout_account_rejected`. A recipient identity already owned by another customer returns sanitized `409 payout_account_conflict`, and lock contention returns `409 payout_account_busy`. Provider unavailability, malformed responses, and timeouts map centrally to sanitized `503 payment_provider_unavailable`, `502 payment_provider_invalid_response`, and `504 payment_provider_timeout`. Exceeding the per-customer limit returns the standard `429 rate_limit_exceeded` response. Provider text, account details, secrets, and raw payloads are not copied into these responses.
+
 ## Purchase-driven achievements
 
 Only completed purchases are stored. The service deliberately has no pending/failed purchase states and no product, cart, inventory, or checkout model: a trusted upstream checkout system sends a completed fact after its own payment flow succeeds. Purchases are currently restricted to NGN and monetary values use integer minor units (kobo), never floating point.
@@ -212,9 +265,9 @@ Both events implement after-commit dispatch. A transaction rollback therefore re
 
 ### Durable cashback entitlement
 
-`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. New rewards start in `awaiting_payout_account` because payout-account management belongs to the next milestone.
+`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. New rewards start in `awaiting_payout_account`. Customers can now register a verified destination, while the listener that discovers waiting rewards and starts payout execution belongs to the next milestone.
 
-Creating the reward is not the same as paying it. This phase intentionally adds no payment job, gateway contract, Paystack request, webhook, or reconciliation process. Those external and retryable effects will consume the already durable obligation in a later phase.
+Creating the reward is not the same as paying it. This phase adds only the transfer-recipient gateway used during onboarding; it intentionally adds no payment job, cashback-transfer gateway, Paystack request, webhook, or reconciliation process. Those external and retryable effects will consume the already durable obligation in a later phase.
 
 Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, payout execution, and clawbacks are not part of this milestone.
 
@@ -291,8 +344,9 @@ Inspect and verify the achievement-to-reward-entitlement wiring:
 
 ```bash
 docker compose run --rm app php artisan route:list --path=api/internal/purchases
+docker compose run --rm app php artisan route:list --path=api/me/payout-account
 docker compose run --rm app php artisan event:list
-docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Concurrency
+docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Payouts tests/Feature/Concurrency
 docker compose run --rm app composer quality
 ```
 
@@ -341,5 +395,6 @@ Run the first-time setup commands again afterward.
 - `.env` and production environment files are excluded from Git and the Docker build context.
 - The credentials in `.env.example` are local-development defaults only.
 - Production secrets must be injected by the deployment environment.
+- Full payout account numbers are accepted only over the protected request boundary for recipient creation and are never persisted or returned.
 - The production image runs application processes as the unprivileged `app` user.
 - Horizon is available locally and denied by default in non-local environments until an explicit authorization rule is added with authentication.
