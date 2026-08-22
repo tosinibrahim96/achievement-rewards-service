@@ -19,6 +19,11 @@ class DatabaseSeeder extends Seeder
      */
     public function run(): void
     {
+        $this->call([
+            AchievementCatalogueSeeder::class,
+            BadgeCatalogueSeeder::class,
+        ]);
+
         User::query()->firstOrCreate(
             ['email' => 'test@example.com'],
             [
