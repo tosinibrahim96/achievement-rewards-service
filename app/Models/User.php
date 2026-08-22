@@ -47,6 +47,18 @@ class User extends Authenticatable
         return $this->hasMany(UserAchievement::class);
     }
 
+    /** @return HasMany<UserBadge, $this> */
+    public function userBadges(): HasMany
+    {
+        return $this->hasMany(UserBadge::class);
+    }
+
+    /** @return HasMany<CashbackReward, $this> */
+    public function cashbackRewards(): HasMany
+    {
+        return $this->hasMany(CashbackReward::class);
+    }
+
     /**
      * Get the attributes that should be cast.
      *

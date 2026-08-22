@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Achievements;
 
+use App\Events\AchievementUnlocked;
 use App\Models\Achievement;
 use App\Models\Purchase;
 use App\Models\User;
@@ -25,6 +26,12 @@ final readonly class UnlockAchievement
             ],
         );
 
-        return $unlock->wasRecentlyCreated ? $unlock : null;
+        if (! $unlock->wasRecentlyCreated) {
+            return null;
+        }
+
+        AchievementUnlocked::dispatch($achievement->name, $user);
+
+        return $unlock;
     }
 }

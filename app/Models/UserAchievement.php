@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * @property int $id
@@ -44,6 +45,12 @@ class UserAchievement extends Model
     public function triggeringPurchase(): BelongsTo
     {
         return $this->belongsTo(Purchase::class, 'triggered_by_purchase_id');
+    }
+
+    /** @return HasMany<UserBadge, $this> */
+    public function triggeredBadges(): HasMany
+    {
+        return $this->hasMany(UserBadge::class, 'triggered_by_user_achievement_id');
     }
 
     /** @return array<string, string> */

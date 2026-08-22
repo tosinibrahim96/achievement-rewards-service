@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, and purchase-driven achievement unlocking. Achievement events, badge evaluation, cashback, payment behavior, and the customer achievement endpoint remain later milestones.
+The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, and durable cashback reward entitlements. Payout accounts, payment execution, provider integration, and the customer achievement endpoint remain later milestones.
 
 ## Prerequisite
 
@@ -135,7 +135,7 @@ Two active progressions are seeded idempotently:
 | Purchase count | First Purchase (1), 3 Purchases (3), 5 Purchases (5), 10 Purchases (10), 25 Purchases (25) |
 | Lifetime NGN spend | NGN 5,000 (500,000 kobo), NGN 10,000 (1,000,000), NGN 25,000 (2,500,000), NGN 50,000 (5,000,000), NGN 100,000 (10,000,000) |
 
-The four future badge definitions—Beginner at 1 achievement, Intermediate at 4, Advanced at 8, and Master at 10—are also seeded, but Task 1 does not evaluate or award badges. The future badge cashback rule is version controlled in `config/rewards.php` as `30000` kobo in NGN.
+Four badge definitions are also seeded: Beginner at 1 achievement, Intermediate at 4, Advanced at 8, and Master at 10. Every newly crossed active badge is awarded in rank order and creates one durable cashback entitlement. The cashback rule is version controlled in `config/rewards.php` as `30000` kobo in NGN.
 
 ### Trusted ingestion contract
 
@@ -191,11 +191,32 @@ trusted POST
     -> PostgreSQL transaction locks that user's row
     -> purchase-count and lifetime-NGN-spend calculators run
     -> every newly crossed active threshold is inserted in order
+    -> dispatch one AchievementUnlocked after commit per new achievement
+    -> queued badge listener, serialized by a separate per-user Redis lock
+    -> PostgreSQL transaction locks that user's row and counts durable unlocks
+    -> every newly crossed active badge is persisted in rank order
+    -> create one NGN 300 cashback reward in the same badge transaction
+    -> dispatch one BadgeUnlocked after commit per new badge
 ```
 
-The evaluator may unlock several thresholds for one large purchase. A unique `(user_id, achievement_id)` database constraint is the final duplicate defense; the Redis overlap lock and PostgreSQL user-row lock serialize normal competing work and reduce contention. Redelivered events remain safe. `AchievementUnlocked` is intentionally deferred to Task 2, so Task 1 stops after persisting `user_achievements`.
+The evaluator may unlock several achievement and badge thresholds for one large purchase. Separate achievement and badge Redis locks prevent each queued stage from overlapping with another delivery of the same stage without blocking the downstream job created by the upstream listener. PostgreSQL user-row locks serialize durable progression, while unique `(user_id, achievement_id)`, `(user_id, badge_id)`, and `user_badge_id` reward constraints remain the final duplicate defenses. Redelivered events remain safe.
 
-Achievement unlocks are permanent in the current scope. Refund ingestion, revocation, badge awards, cashback records, and payment execution are not part of this milestone.
+The assessment-facing event contracts are deliberately minimal and exact:
+
+```text
+AchievementUnlocked(achievement_name: string, user: User)
+BadgeUnlocked(badge_name: string, user: User)
+```
+
+Both events implement after-commit dispatch. A transaction rollback therefore removes the new history/reward rows and emits no event. Existing unlocks return as idempotent no-ops and do not emit a duplicate event.
+
+### Durable cashback entitlement
+
+`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. New rewards start in `awaiting_payout_account` because payout-account management belongs to the next milestone.
+
+Creating the reward is not the same as paying it. This phase intentionally adds no payment job, gateway contract, Paystack request, webhook, or reconciliation process. Those external and retryable effects will consume the already durable obligation in a later phase.
+
+Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, payout execution, and clawbacks are not part of this milestone.
 
 ## Daily operation
 
@@ -266,12 +287,12 @@ Use the mutating formatter only when intentionally fixing style:
 docker compose run --rm app composer lint:fix
 ```
 
-Inspect and verify the Task 1 wiring:
+Inspect and verify the achievement-to-reward-entitlement wiring:
 
 ```bash
 docker compose run --rm app php artisan route:list --path=api/internal/purchases
 docker compose run --rm app php artisan event:list
-docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Concurrency
+docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Concurrency
 docker compose run --rm app composer quality
 ```
 

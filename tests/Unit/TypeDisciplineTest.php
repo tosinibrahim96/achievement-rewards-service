@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 use App\Actions\Achievements\EvaluatePurchaseAchievements;
 use App\Actions\Achievements\UnlockAchievement;
+use App\Actions\Badges\EvaluateBadges;
+use App\Actions\Badges\UnlockBadge;
+use App\Actions\Cashback\CreateCashbackReward;
 use App\Actions\Purchases\RecordPurchase;
 use App\Contracts\Achievements\AchievementProgressCalculator;
 use App\Data\Purchases\RecordPurchaseInput;
@@ -15,9 +18,11 @@ use App\Domain\Money\Money;
 use App\Models\Achievement;
 use App\Models\AchievementGroup;
 use App\Models\Badge;
+use App\Models\CashbackReward;
 use App\Models\Purchase;
 use App\Models\User;
 use App\Models\UserAchievement;
+use App\Models\UserBadge;
 use ReflectionClass;
 
 it('uses final readonly classes for leaf values and stateless actions without freezing eloquent models', function (): void {
@@ -31,6 +36,9 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         LifetimeSpendProgressCalculator::class,
         EvaluatePurchaseAchievements::class,
         UnlockAchievement::class,
+        EvaluateBadges::class,
+        UnlockBadge::class,
+        CreateCashbackReward::class,
     ];
 
     foreach ($finalReadonlyClasses as $class) {
@@ -47,6 +55,8 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         Achievement::class,
         UserAchievement::class,
         Badge::class,
+        UserBadge::class,
+        CashbackReward::class,
     ];
 
     foreach ($mutableModels as $class) {
