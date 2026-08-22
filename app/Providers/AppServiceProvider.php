@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Providers;
 
+use App\Contracts\Achievements\AchievementProgressCalculator;
+use App\Domain\Achievements\LifetimeSpendProgressCalculator;
+use App\Domain\Achievements\PurchaseCountProgressCalculator;
 use App\Models\User;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -19,7 +22,10 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->tag(
+            [PurchaseCountProgressCalculator::class, LifetimeSpendProgressCalculator::class],
+            AchievementProgressCalculator::class,
+        );
     }
 
     /**
