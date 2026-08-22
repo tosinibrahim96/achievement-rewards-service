@@ -45,12 +45,20 @@ COPY composer.json composer.lock ./
 
 RUN apk add --no-cache git \
     && composer install \
-    --classmap-authoritative \
     --no-dev \
     --no-interaction \
+    --no-autoloader \
     --no-progress \
     --no-scripts \
     --prefer-dist
+
+COPY app ./app
+
+RUN composer dump-autoload \
+    --classmap-authoritative \
+    --no-dev \
+    --no-interaction \
+    --no-scripts
 
 FROM php-base AS vendor-development
 
