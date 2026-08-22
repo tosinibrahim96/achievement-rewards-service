@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Contracts\Achievements\AchievementProgressCalculator;
+use App\Contracts\Payments\TransferRecipientGateway;
 use App\Domain\Achievements\LifetimeSpendProgressCalculator;
 use App\Domain\Achievements\PurchaseCountProgressCalculator;
+use App\Infrastructure\Payments\FakeTransferRecipientGateway;
 use App\Models\User;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -25,6 +27,11 @@ class AppServiceProvider extends ServiceProvider
         $this->app->tag(
             [PurchaseCountProgressCalculator::class, LifetimeSpendProgressCalculator::class],
             AchievementProgressCalculator::class,
+        );
+
+        $this->app->tag(
+            [FakeTransferRecipientGateway::class],
+            TransferRecipientGateway::class,
         );
     }
 
@@ -52,6 +59,13 @@ class AppServiceProvider extends ServiceProvider
             $key = $actor instanceof User ? "system:{$actor->id}" : ($request->ip() ?? 'unknown');
 
             return Limit::perMinute(120)->by($key);
+        });
+
+        RateLimiter::for('payout-account', static function (Request $request): Limit {
+            $actor = $request->user('sanctum');
+            $key = $actor instanceof User ? "customer:{$actor->id}" : ($request->ip() ?? 'unknown');
+
+            return Limit::perMinute(5)->by($key);
         });
     }
 }
