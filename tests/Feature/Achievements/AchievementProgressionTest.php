@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Actions\Purchases\RecordPurchase;
 use App\Data\Purchases\RecordPurchaseInput;
 use App\Domain\Money\Money;
+use App\Enums\AchievementMetric;
 use App\Enums\Currency;
 use App\Events\PurchaseCompleted;
 use App\Models\Achievement;
@@ -69,6 +70,31 @@ it('unlocks every reached purchase count milestone once', function (int $count, 
         'first-purchase', 'three-purchases', 'five-purchases', 'ten-purchases', 'twenty-five-purchases',
     ]],
 ]);
+
+it('unlocks achievements from a third group that reuses a supported metric', function (): void {
+    $user = User::factory()->create();
+    $group = AchievementGroup::factory()->create([
+        'code' => 'customer-loyalty',
+        'name' => 'Customer Loyalty',
+        'metric' => AchievementMetric::PurchaseCount,
+        'sort_order' => 3,
+    ]);
+    $achievement = Achievement::factory()->for($group, 'group')->create([
+        'code' => 'returning-customer',
+        'name' => 'Returning Customer',
+        'threshold' => 2,
+        'sort_order' => 1,
+    ]);
+
+    Purchase::factory()->for($user)->create(['amount_minor' => 1]);
+    recordQualifyingPurchase($user, 'ORDER-RETURNING-CUSTOMER', 1);
+
+    expect(AchievementGroup::query()->count())->toBe(3)
+        ->and(UserAchievement::query()
+            ->whereBelongsTo($user)
+            ->whereBelongsTo($achievement)
+            ->exists())->toBeTrue();
+});
 
 it('does not unlock a lifetime spend achievement below its first threshold', function (): void {
     $user = User::factory()->create();
