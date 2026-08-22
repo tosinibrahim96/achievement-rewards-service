@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use App\Enums\AccountType;
 use App\Models\User;
 
 it('uses the expected runtime version', function (): void {
@@ -15,5 +16,6 @@ it('keeps sensitive user attributes hidden and securely cast', function (): void
         ->and($user->getCasts())->toMatchArray([
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
+            'account_type' => AccountType::class,
         ]);
 });

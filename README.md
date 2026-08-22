@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project is currently at the infrastructure foundation milestone. Domain features and authentication are intentionally not implemented yet.
+The project currently includes its Docker-based infrastructure foundation and customer authentication. Achievement, badge, and cashback domain features are implemented in later milestones.
 
 ## Prerequisite
 
@@ -33,6 +33,94 @@ The application is then available at <http://localhost:8000>. A successful respo
   "status": "ok"
 }
 ```
+
+## Customer authentication
+
+Laravel Sanctum issues bearer tokens for the JSON API. The public auth routes create and authenticate customer accounts only:
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/auth/register` | Register a customer and issue a token |
+| `POST` | `/api/auth/login` | Authenticate a customer and issue a token |
+| `POST` | `/api/auth/logout` | Revoke the bearer token used for the request |
+| `GET` | `/api/me` | Return the authenticated user |
+
+Register a customer:
+
+```bash
+curl --request POST http://localhost:8000/api/auth/register \
+  --header 'Accept: application/json' \
+  --header 'Content-Type: application/json' \
+  --data '{
+    "name": "Example Customer",
+    "email": "customer@example.com",
+    "password": "secure-password",
+    "password_confirmation": "secure-password",
+    "device_name": "local-demo"
+  }'
+```
+
+Registration returns `201 Created`; login returns `200 OK`. Both use the same root-level response contract (ordinary API Resources do not add a `data` wrapper):
+
+```json
+{
+  "user": {
+    "id": 1,
+    "name": "Example Customer",
+    "email": "customer@example.com",
+    "account_type": "customer"
+  },
+  "token": "1|ars_...",
+  "token_type": "Bearer",
+  "abilities": [
+    "achievements:read",
+    "payout-accounts:write",
+    "cashback-rewards:read"
+  ]
+}
+```
+
+Send the `token` value only in the `Authorization` header. It is shown once and the database stores only its SHA-256 hash:
+
+```bash
+curl http://localhost:8000/api/me \
+  --header 'Accept: application/json' \
+  --header 'Authorization: Bearer <token>'
+```
+
+Customer tokens receive only these abilities:
+
+- `achievements:read`
+- `payout-accounts:write`
+- `cashback-rewards:read`
+
+The reserved `purchases:write` ability is never issued by public registration or login. It belongs to trusted system identities created through the later internal demo/setup workflow.
+
+The Sanctum guard is explicitly restricted to the `users` provider. This still accepts both customer and system `User` identities while preventing an unrelated tokenable model from becoming valid accidentally. Logout is bearer-only: it revokes only the persisted personal access token used for the request, returns an empty `204 No Content`, and leaves other tokens valid. For logout, missing, revoked, or session/transient authentication receives `401`.
+
+The auth delivery flow is deliberately narrow:
+
+```text
+FormRequest -> immutable input DTO -> one top-level Action -> typed result -> API Resource
+```
+
+Controllers only receive, delegate, and respond. The register/login Actions coordinate token issuance; `/api/me` wraps the authenticated `User` directly because it has no application work to perform.
+
+API failures use one compact `application/json` contract. The HTTP status is carried only by the response status line; the body contains a stable machine-readable `code`, a human-readable `message`, and optional validation `errors`. Protocol headers such as `WWW-Authenticate`, `Allow`, and `Retry-After` are preserved.
+
+Each request receives a server-generated request ID for logs and the `X-Request-ID` response header, but diagnostic identifiers are not repeated in the JSON body. Workflow correlation IDs remain internal log/context metadata; clients receive domain identifiers such as purchase references instead.
+
+```json
+{
+  "code": "validation_failed",
+  "message": "One or more fields are invalid.",
+  "errors": {
+    "email": ["The email field must be a valid email address."]
+  }
+}
+```
+
+Malformed or missing login fields return `422 validation_failed` with field-level `errors`. A syntactically valid login with an unknown email, wrong password, or system identity returns the same `401 invalid_credentials` body without an `errors` object, so clients are not told that the email field itself is invalid and account existence is not disclosed. `WWW-Authenticate: Bearer` is reserved for protected endpoints that actually require an existing bearer token.
 
 The setup command is safe to rerun. It installs the locked dependencies and applies only outstanding migrations.
 

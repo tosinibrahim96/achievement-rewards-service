@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace Database\Seeders;
 
+use App\Enums\AccountType;
 use App\Models\User;
 use Illuminate\Database\Console\Seeds\WithoutModelEvents;
 use Illuminate\Database\Seeder;
@@ -24,6 +25,7 @@ class DatabaseSeeder extends Seeder
                 'name' => 'Test User',
                 'email_verified_at' => now(),
                 'password' => Hash::make('password'),
+                'account_type' => AccountType::Customer,
             ],
         );
     }
