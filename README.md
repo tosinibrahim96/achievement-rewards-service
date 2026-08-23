@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback rewards, verified/masked payout-account onboarding, deterministic fake-backed payout execution, a Paystack test-mode adapter, signed Paystack transfer callbacks, first-transition support escalation, and customer cashback visibility. Automatic payout retry/reconciliation remains deferred beyond this assessment; the customer achievement endpoint remains a later milestone.
+The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, customer achievement visibility, durable cashback rewards, verified/masked payout-account onboarding, deterministic fake-backed payout execution, a Paystack test-mode adapter, signed Paystack transfer callbacks, first-transition support escalation, and customer cashback visibility. Automatic payout retry/reconciliation remains deferred beyond this assessment.
 
 ## Prerequisite
 
@@ -279,6 +279,46 @@ Two active progressions are seeded idempotently:
 
 Four badge definitions are also seeded: Beginner at 1 achievement, Intermediate at 4, Advanced at 8, and Master at 10. Every newly crossed active badge is awarded in rank order and creates one durable cashback entitlement. The cashback rule is version controlled in `config/rewards.php` as `30000` kobo in NGN.
 
+### Customer achievement progress
+
+The required progress route is declared in `routes/web.php` and intentionally has no `/api` prefix:
+
+```text
+GET /users/{user}/achievements
+```
+
+Use a customer Sanctum bearer token containing `achievements:read`. The `{user}` value must be that customer's own ID. Other customers and system accounts receive `403` even when their token has the ability.
+
+```bash
+curl http://localhost:8000/users/42/achievements \
+  --header 'Accept: application/json' \
+  --header 'Authorization: Bearer <customer-token>'
+```
+
+The successful response has exactly five top-level fields and no `data` wrapper:
+
+```json
+{
+  "unlocked_achievements": [
+    "First Purchase",
+    "NGN 5,000 Spent"
+  ],
+  "next_available_achievements": [
+    "3 Purchases",
+    "NGN 10,000 Spent"
+  ],
+  "current_badge": "Beginner",
+  "next_badge": "Intermediate",
+  "remaining_to_unlock_next_badge": 2
+}
+```
+
+Unlocked names come from saved unlock records and use this order: group `sort_order`, group `code`, achievement `sort_order`, then achievement `code`. For each active unfinished group, the next list shows only the first active achievement the user has not earned. Inactive groups and unearned inactive achievements are omitted from next steps. Previously earned achievements and badges remain visible even if their definitions are later deactivated.
+
+`current_badge` is the highest badge actually awarded, not one guessed from the achievement count. `next_badge` is the lowest active rank above that saved badge, or the first active badge when current is `null`. Before the first award, current is `null`; after Master, next is `null` and remaining is `0`. If achievements are saved before the queued badge job catches up, the API uses `max(0, next badge requirement - earned achievement count)`. The remaining count therefore never goes below zero, and the API never claims an unsaved badge.
+
+After authentication and user lookup, the progress Action runs four database queries. Adding groups or achievements does not add queries, although each query can process more rows. The Action never changes achievement, badge, or reward data, queues jobs, or uses a cache.
+
 ### Trusted ingestion contract
 
 `POST /api/internal/purchases` requires all of the following:
@@ -510,6 +550,7 @@ Inspect and verify the achievement-to-reward-entitlement wiring:
 
 ```bash
 docker compose run --rm app php artisan route:list --path=api/internal/purchases
+docker compose run --rm app php artisan route:list --path=users -v
 docker compose run --rm app php artisan route:list --path=api/me/payout-account
 docker compose run --rm app php artisan route:list --path=api/me/cashback-rewards
 docker compose run --rm app php artisan route:list --path=api/webhooks/paystack
