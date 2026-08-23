@@ -11,9 +11,12 @@ use App\Events\PurchaseCompleted;
 use App\Exceptions\Purchases\PurchaseReferenceConflictException;
 use App\Models\Purchase;
 use App\Models\User;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 use InvalidArgumentException;
+use Throwable;
 
 final readonly class RecordPurchase
 {
@@ -42,10 +45,12 @@ final readonly class RecordPurchase
 
             if (! $purchase->wasRecentlyCreated) {
                 $this->ensureMatchingDelivery($purchase, $input);
+                $this->logPurchaseAfterCommit($purchase, wasDuplicate: true);
 
                 return new RecordPurchaseResult($purchase, wasDuplicate: true);
             }
 
+            $this->logPurchaseAfterCommit($purchase, wasDuplicate: false);
             PurchaseCompleted::dispatch($purchase);
 
             return new RecordPurchaseResult($purchase, wasDuplicate: false);
@@ -60,6 +65,41 @@ final readonly class RecordPurchase
 
         if (! $matches) {
             throw new PurchaseReferenceConflictException;
+        }
+    }
+
+    private function logPurchaseAfterCommit(Purchase $purchase, bool $wasDuplicate): void
+    {
+        $logDetails = [
+            'purchase_id' => $purchase->id,
+            'user_id' => $purchase->user_id,
+            'correlation_id' => $purchase->correlation_id,
+            'result' => $wasDuplicate ? 'duplicate' : 'created',
+        ];
+
+        DB::afterCommit(function () use ($logDetails, $wasDuplicate): void {
+            try {
+                Context::scope(function () use ($logDetails, $wasDuplicate): void {
+                    if ($wasDuplicate) {
+                        Log::debug('purchase.processed', $logDetails);
+
+                        return;
+                    }
+
+                    Log::info('purchase.processed', $logDetails);
+                }, ['correlation_id' => $logDetails['correlation_id']]);
+            } catch (Throwable $exception) {
+                $this->reportLogFailure($exception);
+            }
+        });
+    }
+
+    private function reportLogFailure(Throwable $exception): void
+    {
+        try {
+            report($exception);
+        } catch (Throwable) {
+            // The purchase is already committed; a reporting failure must not change the result.
         }
     }
 }

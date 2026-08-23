@@ -6,10 +6,13 @@ use App\Enums\AccountType;
 use App\Enums\Currency;
 use App\Enums\TokenAbility;
 use App\Events\PurchaseCompleted;
+use App\Http\Middleware\AssignRequestId;
 use App\Models\Purchase;
 use App\Models\User;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 
 uses(DatabaseMigrations::class);
 
@@ -115,6 +118,68 @@ it('returns the existing purchase for an identical replay without dispatching tw
     Event::assertDispatchedTimes(PurchaseCompleted::class, 1);
 });
 
+it('logs only allowed fields for new and repeated purchases', function (): void {
+    Event::fake([PurchaseCompleted::class]);
+    $customer = User::factory()->create();
+    $system = User::factory()->system()->create();
+    $headers = purchaseIngestionHeaders($system, [TokenAbility::PurchasesWrite->value]);
+    $payload = validPurchasePayload($customer);
+    $createdContext = [];
+    $duplicateContext = [];
+    $createdRequestId = null;
+    $duplicateRequestId = null;
+    $previousCorrelationId = 'previous-workflow';
+    Context::add('correlation_id', $previousCorrelationId);
+
+    Log::shouldReceive('info')->once()->with(
+        'purchase.processed',
+        Mockery::on(function (array $context) use (&$createdContext, &$createdRequestId): bool {
+            $createdContext = $context;
+            $createdRequestId = Context::get(AssignRequestId::ATTRIBUTE);
+
+            return Context::get('correlation_id') === ($context['correlation_id'] ?? null);
+        }),
+    );
+    Log::shouldReceive('debug')->once()->with(
+        'purchase.processed',
+        Mockery::on(function (array $context) use (&$duplicateContext, &$duplicateRequestId): bool {
+            $duplicateContext = $context;
+            $duplicateRequestId = Context::get(AssignRequestId::ATTRIBUTE);
+
+            return Context::get('correlation_id') === ($context['correlation_id'] ?? null);
+        }),
+    );
+
+    $created = $this->postJson('/api/internal/purchases', $payload, $headers)->assertCreated();
+    expect(Context::get('correlation_id'))->toBe($previousCorrelationId);
+    $duplicate = $this->postJson('/api/internal/purchases', $payload, $headers)->assertOk();
+    expect(Context::get('correlation_id'))->toBe($previousCorrelationId);
+    $purchase = Purchase::query()->sole();
+
+    expect(array_keys($createdContext))->toBe([
+        'purchase_id',
+        'user_id',
+        'correlation_id',
+        'result',
+    ])->and($createdContext)->toBe([
+        'purchase_id' => $purchase->id,
+        'user_id' => $customer->id,
+        'correlation_id' => $purchase->correlation_id,
+        'result' => 'created',
+    ])->and($duplicateContext)->toBe([
+        'purchase_id' => $purchase->id,
+        'user_id' => $customer->id,
+        'correlation_id' => $purchase->correlation_id,
+        'result' => 'duplicate',
+    ])->and($createdRequestId)->toBeString()
+        ->and($duplicateRequestId)->toBeString()
+        ->and($createdRequestId)->toBe($created->headers->get(AssignRequestId::HEADER))
+        ->and($duplicateRequestId)->toBe($duplicate->headers->get(AssignRequestId::HEADER))
+        ->and($duplicateRequestId)->not->toBe($createdRequestId)
+        ->and(json_encode([$createdContext, $duplicateContext], JSON_THROW_ON_ERROR))
+        ->not->toContain('ORDER-10042');
+});
+
 it('rejects a conflicting reuse of an external reference', function (): void {
     Event::fake([PurchaseCompleted::class]);
 
@@ -124,6 +189,7 @@ it('rejects a conflicting reuse of an external reference', function (): void {
     $payload = validPurchasePayload($customer);
 
     $this->postJson('/api/internal/purchases', $payload, $headers)->assertCreated();
+    Log::spy();
 
     $this->postJson('/api/internal/purchases', [...$payload, 'amount_minor' => 2_500_001], $headers)
         ->assertConflict()
@@ -134,6 +200,8 @@ it('rejects a conflicting reuse of an external reference', function (): void {
 
     expect(Purchase::query()->count())->toBe(1);
     Event::assertDispatchedTimes(PurchaseCompleted::class, 1);
+    Log::shouldNotHaveReceived('info', ['purchase.processed', Mockery::type('array')]);
+    Log::shouldNotHaveReceived('debug', ['purchase.processed', Mockery::type('array')]);
 });
 
 it('validates completed purchase input', function (array $override, string $field): void {

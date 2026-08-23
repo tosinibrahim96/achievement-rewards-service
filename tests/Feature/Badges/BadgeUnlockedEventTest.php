@@ -12,6 +12,7 @@ use Database\Seeders\BadgeCatalogueSeeder;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 use Tests\Support\BadgeTestData;
 
@@ -38,8 +39,9 @@ it('exposes the exact badge event contract for a newly persisted award', functio
     });
 });
 
-it('dispatches BadgeUnlocked only after the surrounding transaction commits', function (): void {
+it('dispatches BadgeUnlocked and logs the badge result only after the outer transaction commits', function (): void {
     Event::fake([BadgeUnlocked::class]);
+    Log::spy();
     $user = User::factory()->create();
     BadgeTestData::giveAchievements($user, 1);
 
@@ -47,13 +49,22 @@ it('dispatches BadgeUnlocked only after the surrounding transaction commits', fu
         app(EvaluateBadges::class)->handle($user);
 
         Event::assertNotDispatched(BadgeUnlocked::class);
+        Log::shouldNotHaveReceived('info', [
+            'badge.evaluation.completed',
+            Mockery::type('array'),
+        ]);
     });
 
     Event::assertDispatchedTimes(BadgeUnlocked::class, 1);
+    Log::shouldHaveReceived('info')->once()->with(
+        'badge.evaluation.completed',
+        Mockery::type('array'),
+    );
 });
 
-it('rolls back the badge reward and event together', function (): void {
+it('rolls back the badge and reward without dispatching or logging', function (): void {
     Event::fake([BadgeUnlocked::class]);
+    Log::spy();
     $user = User::factory()->create();
     BadgeTestData::giveAchievements($user, 1);
 
@@ -70,6 +81,10 @@ it('rolls back the badge reward and event together', function (): void {
     expect(UserBadge::query()->count())->toBe(0)
         ->and(CashbackReward::query()->count())->toBe(0);
     Event::assertNotDispatched(BadgeUnlocked::class);
+    Log::shouldNotHaveReceived('info', [
+        'badge.evaluation.completed',
+        Mockery::type('array'),
+    ]);
 });
 
 it('emits each newly crossed badge once and emits nothing on replay', function (): void {

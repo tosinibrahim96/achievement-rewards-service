@@ -12,6 +12,7 @@ use App\Enums\PaymentProviderFailure;
 use App\Enums\TokenAbility;
 use App\Events\PayoutAccountVerified;
 use App\Exceptions\Payments\PaymentProviderException;
+use App\Http\Middleware\AssignRequestId;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
 use App\Models\PayoutAccount;
 use App\Models\User;
@@ -97,7 +98,8 @@ it('requires authentication the payout ability and a customer identity', functio
     expect(PayoutAccount::query()->count())->toBe(0);
 });
 
-it('returns the exact safe root-level contract with creation and replacement statuses', function (): void {
+it('returns masked payout account details and logs changes with request ids', function (): void {
+    Event::fake([PayoutAccountVerified::class]);
     $customer = User::factory()->create();
     $headers = payoutAccountHeaders($customer, [TokenAbility::PayoutAccountsWrite->value]);
     $accountNumber = '0000001234';
@@ -144,6 +146,35 @@ it('returns the exact safe root-level contract with creation and replacement sta
     expect($replaced->json('id'))->toBe($created->json('id'))
         ->and($replaced->json('masked_account_number'))->toBe('******9876')
         ->and(PayoutAccount::query()->whereBelongsTo($customer)->count())->toBe(1);
+
+    $payoutAccountLogs = collect($logHandler->getRecords())
+        ->filter(static fn ($record): bool => $record->message === 'payout_account.saved')
+        ->values();
+    $creationLog = $payoutAccountLogs->get(0);
+    $replacementLog = $payoutAccountLogs->get(1);
+    $createdRequestId = $created->headers->get(AssignRequestId::HEADER);
+    $replacedRequestId = $replaced->headers->get(AssignRequestId::HEADER);
+
+    expect($payoutAccountLogs)->toHaveCount(2)
+        ->and($creationLog->context)->toBe([
+            'user_id' => $customer->id,
+            'payout_account_id' => $created->json('id'),
+            'provider' => PaymentProvider::Fake->value,
+            'result' => 'created',
+        ])->and($replacementLog->context)->toBe([
+            'user_id' => $customer->id,
+            'payout_account_id' => $created->json('id'),
+            'provider' => PaymentProvider::Fake->value,
+            'result' => 'replaced',
+        ])->and($createdRequestId)->toBeString()
+        ->and($replacedRequestId)->toBeString()
+        ->and($replacedRequestId)->not->toBe($createdRequestId)
+        ->and($creationLog->extra[AssignRequestId::ATTRIBUTE] ?? null)->toBe($createdRequestId)
+        ->and($replacementLog->extra[AssignRequestId::ATTRIBUTE] ?? null)->toBe($replacedRequestId)
+        ->and($creationLog->extra)->not->toHaveKey('correlation_id')
+        ->and($replacementLog->extra)->not->toHaveKey('correlation_id')
+        ->and(json_encode($payoutAccountLogs->all(), JSON_THROW_ON_ERROR))->not->toContain($accountNumber)
+        ->and(json_encode($payoutAccountLogs->all(), JSON_THROW_ON_ERROR))->not->toContain('0000009876');
 });
 
 it('validates string bank details and rejects every unexpected customer field', function (array $payload, string $field): void {

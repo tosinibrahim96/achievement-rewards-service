@@ -16,10 +16,13 @@ use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Schema;
 use LogicException;
+use RuntimeException;
 
 uses(DatabaseMigrations::class);
 
@@ -84,6 +87,79 @@ it('replaces the existing account in place and reports the outcome explicitly', 
     Event::assertDispatchedTimes(PayoutAccountVerified::class, 2);
 });
 
+it('logs created and replaced accounts after database commit and cache lock release', function (): void {
+    Event::fake([PayoutAccountVerified::class]);
+    $user = User::factory()->create();
+    $action = app(RegisterPayoutAccount::class);
+    $loggedContexts = [];
+    $transactionLevelsWhenLogged = [];
+    $couldAcquireLockWhenLogged = [];
+
+    Log::shouldReceive('info')->twice()->with(
+        'payout_account.saved',
+        Mockery::on(function (array $context) use ($user, &$loggedContexts, &$transactionLevelsWhenLogged, &$couldAcquireLockWhenLogged): bool {
+            $loggedContexts[] = $context;
+            $transactionLevelsWhenLogged[] = DB::connection()->transactionLevel();
+            $sameUserLock = Cache::lock("payout-account:user:{$user->id}", 1);
+            $lockWasAcquired = $sameUserLock->get();
+            $couldAcquireLockWhenLogged[] = $lockWasAcquired;
+
+            if ($lockWasAcquired) {
+                $sameUserLock->release();
+            }
+
+            return true;
+        }),
+    );
+
+    $created = $action->handle($user, new RegisterPayoutAccountInput('0000001234', '057'));
+    $replaced = $action->handle($user, new RegisterPayoutAccountInput('0000009876', '058'));
+
+    expect($loggedContexts)->toBe([
+        [
+            'user_id' => $user->id,
+            'payout_account_id' => $created->payoutAccount->id,
+            'provider' => PaymentProvider::Fake->value,
+            'result' => 'created',
+        ],
+        [
+            'user_id' => $user->id,
+            'payout_account_id' => $created->payoutAccount->id,
+            'provider' => PaymentProvider::Fake->value,
+            'result' => 'replaced',
+        ],
+    ])->and(array_keys($loggedContexts[0]))->toBe([
+        'user_id',
+        'payout_account_id',
+        'provider',
+        'result',
+    ])->and($transactionLevelsWhenLogged)->toBe([0, 0])
+        ->and($couldAcquireLockWhenLogged)->toBe([true, true])
+        ->and(json_encode($loggedContexts, JSON_THROW_ON_ERROR))->not->toContain('0000001234')
+        ->and(json_encode($loggedContexts, JSON_THROW_ON_ERROR))->not->toContain('0000009876');
+
+    expect($replaced->payoutAccount->id)->toBe($created->payoutAccount->id);
+});
+
+it('keeps the payout account when account logging fails', function (): void {
+    Event::fake([PayoutAccountVerified::class]);
+    $user = User::factory()->create();
+    Log::spy();
+    Log::shouldReceive('info')
+        ->once()
+        ->with('payout_account.saved', Mockery::type('array'))
+        ->andThrow(new RuntimeException('payout account log unavailable'));
+
+    $registration = app(RegisterPayoutAccount::class)->handle(
+        $user,
+        new RegisterPayoutAccountInput('0000001234', '057'),
+    );
+
+    expect($registration->wasCreated)->toBeTrue()
+        ->and(PayoutAccount::query()->whereKey($registration->payoutAccount->id)->exists())->toBeTrue();
+    Event::assertDispatchedTimes(PayoutAccountVerified::class, 1);
+});
+
 it('notifies listeners only after the local transaction commits', function (): void {
     $transactionLevels = [];
     Event::listen(PayoutAccountVerified::class, function () use (&$transactionLevels): void {
@@ -116,6 +192,7 @@ it('preserves the previous account and emits no event when the provider rejects 
         $original->currency->value,
     ];
     Event::fake([PayoutAccountVerified::class]);
+    Log::spy();
     config()->set('payments.fake.payout_account_scenario', 'rejected');
 
     try {
@@ -141,6 +218,10 @@ it('preserves the previous account and emits no event when the provider rejects 
         $preserved->currency->value,
     ])->toBe($originalDestination);
     Event::assertNotDispatched(PayoutAccountVerified::class);
+    Log::shouldNotHaveReceived('info', [
+        'payout_account.saved',
+        Mockery::type('array'),
+    ]);
 });
 
 it('maps a recipient identity conflict while preserving the previous account and suppressing its event', function (): void {
@@ -170,6 +251,7 @@ it('maps a recipient identity conflict while preserving the previous account and
         'provider_recipient_code' => $conflictingRecipient->recipientCode,
     ]);
     Event::fake([PayoutAccountVerified::class]);
+    Log::spy();
 
     expect(fn () => $action->handle($user, $conflictingInput))
         ->toThrow(PayoutAccountConflictException::class);
@@ -187,6 +269,10 @@ it('maps a recipient identity conflict while preserving the previous account and
         $preserved->currency->value,
     ])->toBe($originalDestination);
     Event::assertNotDispatched(PayoutAccountVerified::class);
+    Log::shouldNotHaveReceived('info', [
+        'payout_account.saved',
+        Mockery::type('array'),
+    ]);
 });
 
 it('does not reinterpret or replace a stored account when the configured provider is unavailable', function (): void {
