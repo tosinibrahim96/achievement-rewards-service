@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback reward entitlements, and verified/masked payout-account onboarding through a deterministic fake provider. Cashback payment execution, the real Paystack adapter, reliability/recovery, and the customer achievement endpoint remain later milestones.
+The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback rewards, verified/masked payout-account onboarding, fake-backed payout execution, and customer cashback visibility. The real Paystack adapter, payout reliability/recovery, and the customer achievement endpoint remain later milestones.
 
 ## Prerequisite
 
@@ -171,6 +171,7 @@ The default and CI-safe adapter is selected with:
 ```dotenv
 PAYMENT_DRIVER=fake
 FAKE_PAYOUT_ACCOUNT_SCENARIO=success
+FAKE_TRANSFER_SCENARIO=success
 ```
 
 Supported payout-account fake scenarios are `success` and `rejected`. The fake derives a deterministic internal recipient identity without storing the full account number. Setting `PAYMENT_DRIVER=paystack` before the later Paystack adapter exists fails safely; it never falls back to fake or reinterprets an existing stored account. Changing the default alone changes no persisted destination—only a successful replacement stores a new provider.
@@ -250,6 +251,11 @@ trusted POST
     -> every newly crossed active badge is persisted in rank order
     -> create one NGN 300 cashback reward in the same badge transaction
     -> dispatch one BadgeUnlocked after commit per new badge
+    -> queued wake-up listener discovers all actionable rewards for that user
+    -> queue one unique job carrying only each cashback reward ID
+    -> transactionally snapshot provider, destination, money, and reference in an attempt
+    -> call the fake transfer gateway after the claim transaction commits
+    -> conditionally persist the factual attempt result and customer-visible reward state
 ```
 
 The evaluator may unlock several achievement and badge thresholds for one large purchase. Separate achievement and badge Redis locks prevent each queued stage from overlapping with another delivery of the same stage without blocking the downstream job created by the upstream listener. PostgreSQL user-row locks serialize durable progression, while unique `(user_id, achievement_id)`, `(user_id, badge_id)`, and `user_badge_id` reward constraints remain the final duplicate defenses. Redelivered events remain safe.
@@ -263,13 +269,83 @@ BadgeUnlocked(badge_name: string, user: User)
 
 Both events implement after-commit dispatch. A transaction rollback therefore removes the new history/reward rows and emits no event. Existing unlocks return as idempotent no-ops and do not emit a duplicate event.
 
-### Durable cashback entitlement
+### Durable cashback entitlement and fake payout execution
 
-`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. New rewards start in `awaiting_payout_account`. Customers can now register a verified destination, while the listener that discovers waiting rewards and starts payout execution belongs to the next milestone.
+`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. New rewards start in `awaiting_payout_account`; badge and verified-account wake-ups now discover when they are actionable.
 
-Creating the reward is not the same as paying it. This phase adds only the transfer-recipient gateway used during onboarding; it intentionally adds no payment job, cashback-transfer gateway, Paystack request, webhook, or reconciliation process. Those external and retryable effects will consume the already durable obligation in a later phase.
+Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: their queued listeners re-query all unattempted rewards that the event user can now receive and dispatch one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks and claims the reward, copies the current verified account's provider and destination into a durable `payout_attempts` snapshot, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
 
-Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, payout execution, and clawbacks are not part of this milestone.
+The provider and destination become sticky on first claim. Changing `PAYMENT_DRIVER`, replacing the customer's account, or changing the fake scenario later cannot redirect an existing attempt. The reward's stable reference is reused; the fake stores accepted effects atomically in Redis so duplicate workers observe one process-visible transfer identity. Queue uniqueness and overlap locks reduce repeated work, while the PostgreSQL claim and attempt uniqueness are the durable defenses.
+
+The four server-controlled fake transfer scenarios map as follows:
+
+| `FAKE_TRANSFER_SCENARIO` | Attempt fact | Reward state | Fake effect created |
+| --- | --- | --- | --- |
+| `success` | `succeeded` | `paid` | yes |
+| `pending` | `pending` | `pending` | yes |
+| `insufficient_funds` | `insufficient_funds` | `awaiting_funds` | no |
+| `permanent_failure` | `permanent_rejection` | `requires_attention` | no |
+
+A created fake effect deliberately has no TTL, so a later scenario change cannot erase or replace its transfer identity. The insufficient-funds outcome records its observed zero balance, but the processor does not mistake an advisory balance read for a reservation. PR #5 deliberately adds no automatic retry, webhook, or scheduled reconciliation: `pending`, `processing`, `awaiting_funds`, and `requires_attention` remain visible for the later reliability phase.
+
+After deploying these listeners, run the bounded activation scan once so eligible rewards created before deployment are not left dormant:
+
+```bash
+docker compose run --rm app php artisan cashback:dispatch-actionable
+```
+
+The command only discovers candidates and dispatches the same reward-ID jobs; it never calls a provider itself and is safe to rerun. The reported number is the number of actionable candidates requested, while queue uniqueness may suppress an already queued duplicate. Only the four documented `FAKE_TRANSFER_SCENARIO` values are accepted; an unsupported value fails before a reward is claimed. Changing the server-side scenario requires the long-lived Horizon workers to reload configuration:
+
+```bash
+docker compose restart horizon
+```
+
+There is no public endpoint for selecting a fake result.
+
+### Customer cashback rewards
+
+An authenticated customer can inspect only their own rewards:
+
+```bash
+curl 'http://localhost:8000/api/me/cashback-rewards?page=1' \
+  --header 'Accept: application/json' \
+  --header 'Authorization: Bearer <customer-token>'
+```
+
+The route requires `cashback-rewards:read` and a customer identity. It returns a fixed 20-item page ordered by newest creation time and then ID:
+
+```json
+{
+  "data": [
+    {
+      "id": 81,
+      "badge_name": "Beginner",
+      "amount_minor": 30000,
+      "currency": "NGN",
+      "status": "paid",
+      "created_at": "2026-08-23T01:10:00.000000Z",
+      "updated_at": "2026-08-23T01:10:01.000000Z",
+      "paid_at": "2026-08-23T01:10:01.000000Z"
+    }
+  ],
+  "links": {
+    "first": "http://localhost:8000/api/me/cashback-rewards?page=1",
+    "last": "http://localhost:8000/api/me/cashback-rewards?page=1",
+    "prev": null,
+    "next": null
+  },
+  "meta": {
+    "current_page": 1,
+    "per_page": 20,
+    "last_page": 1,
+    "total": 1
+  }
+}
+```
+
+Provider ownership, stable references, recipient codes, attempt rows, balance observations, and diagnostics are intentionally absent from this customer response.
+
+Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, cashback clawbacks, real-provider HTTP, and automatic payout recovery are not part of this milestone.
 
 ## Daily operation
 
@@ -345,6 +421,8 @@ Inspect and verify the achievement-to-reward-entitlement wiring:
 ```bash
 docker compose run --rm app php artisan route:list --path=api/internal/purchases
 docker compose run --rm app php artisan route:list --path=api/me/payout-account
+docker compose run --rm app php artisan route:list --path=api/me/cashback-rewards
+docker compose run --rm app php artisan help cashback:dispatch-actionable
 docker compose run --rm app php artisan event:list
 docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Payouts tests/Feature/Concurrency
 docker compose run --rm app composer quality

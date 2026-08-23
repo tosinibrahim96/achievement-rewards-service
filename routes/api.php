@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Enums\TokenAbility;
 use App\Http\Controllers\AuthController;
+use App\Http\Controllers\CashbackRewardController;
 use App\Http\Controllers\PayoutAccountController;
 use App\Http\Controllers\PurchaseController;
 use Illuminate\Support\Facades\Route;
@@ -30,6 +31,14 @@ Route::put('/me/payout-account', [PayoutAccountController::class, 'update'])
         'throttle:payout-account',
     ])
     ->name('me.payout-account.update');
+
+Route::get('/me/cashback-rewards', [CashbackRewardController::class, 'index'])
+    ->middleware([
+        'auth:sanctum',
+        'abilities:'.TokenAbility::CashbackRewardsRead->value,
+        'customer-account',
+    ])
+    ->name('me.cashback-rewards.index');
 
 Route::post('/internal/purchases', [PurchaseController::class, 'store'])
     ->middleware([

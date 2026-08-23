@@ -94,8 +94,9 @@ it('fails safely when the per-user lock cannot be acquired', function (): void {
     app()->instance(
         PaymentProviderRegistry::class,
         new PaymentProviderRegistry(
-            [new RedisObservedTransferRecipientGateway($observationNamespace)],
-            PaymentProvider::Fake->value,
+            recipientGateways: [new RedisObservedTransferRecipientGateway($observationNamespace)],
+            transferGateways: [],
+            defaultProvider: PaymentProvider::Fake->value,
         ),
     );
     $heldLock = Cache::store('redis')->lock($lockKey, 30);
@@ -134,8 +135,9 @@ it('serializes provider work and competing replacements into one coherent accoun
     app()->instance(
         PaymentProviderRegistry::class,
         new PaymentProviderRegistry(
-            [new RedisObservedTransferRecipientGateway($observationNamespace)],
-            PaymentProvider::Fake->value,
+            recipientGateways: [new RedisObservedTransferRecipientGateway($observationNamespace)],
+            transferGateways: [],
+            defaultProvider: PaymentProvider::Fake->value,
         ),
     );
     Cache::store('redis')->lock($lockKey)->forceRelease();

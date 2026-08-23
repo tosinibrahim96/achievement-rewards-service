@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace App\Providers;
 
 use App\Contracts\Achievements\AchievementProgressCalculator;
+use App\Contracts\Payments\CashbackTransferGateway;
 use App\Contracts\Payments\TransferRecipientGateway;
 use App\Domain\Achievements\LifetimeSpendProgressCalculator;
 use App\Domain\Achievements\PurchaseCountProgressCalculator;
+use App\Infrastructure\Payments\FakeCashbackTransferGateway;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
 use App\Models\User;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -32,6 +34,11 @@ class AppServiceProvider extends ServiceProvider
         $this->app->tag(
             [FakeTransferRecipientGateway::class],
             TransferRecipientGateway::class,
+        );
+
+        $this->app->tag(
+            [FakeCashbackTransferGateway::class],
+            CashbackTransferGateway::class,
         );
     }
 

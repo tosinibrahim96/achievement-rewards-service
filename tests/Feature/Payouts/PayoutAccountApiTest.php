@@ -176,7 +176,11 @@ it('maps sanitized provider failures through the central API boundary', function
     $accountNumber = '0000001234';
     app()->instance(
         PaymentProviderRegistry::class,
-        new PaymentProviderRegistry([new FailingRecipientGateway($failure)], PaymentProvider::Fake->value),
+        new PaymentProviderRegistry(
+            recipientGateways: [new FailingRecipientGateway($failure)],
+            transferGateways: [],
+            defaultProvider: PaymentProvider::Fake->value,
+        ),
     );
 
     $response = $this->putJson(
