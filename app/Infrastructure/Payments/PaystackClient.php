@@ -20,7 +20,7 @@ final readonly class PaystackClient
         private Factory $http,
         #[Config('payments.paystack.secret_key')]
         #[SensitiveParameter]
-        private ?string $secretKey,
+        private mixed $secretKey,
         #[Config('payments.paystack.base_url', 'https://api.paystack.co')]
         private string $baseUrl,
         #[Config('payments.paystack.connect_timeout_seconds', 5)]
@@ -85,6 +85,30 @@ final readonly class PaystackClient
             && $this->timeoutSeconds >= $this->connectTimeoutSeconds;
     }
 
+    public function hasValidTestSecretKey(): bool
+    {
+        if (! is_string($this->secretKey)) {
+            return false;
+        }
+
+        return preg_match('/\Ask_test_[\x21-\x7E]+\z/', $this->secretKey) === 1;
+    }
+
+    public function matchesWebhookSignature(
+        #[SensitiveParameter] string $rawBody,
+        #[SensitiveParameter] string $signature,
+    ): bool {
+        if (! $this->hasValidTestSecretKey() || ! $this->isCanonicalSignature($signature)) {
+            return false;
+        }
+
+        /** @var non-empty-string $secretKey */
+        $secretKey = $this->secretKey;
+        $expectedSignature = hash_hmac('sha512', $rawBody, $secretKey);
+
+        return hash_equals($expectedSignature, $signature);
+    }
+
     private function request(): PendingRequest
     {
         if (! $this->isConfigured()) {
@@ -129,15 +153,6 @@ final readonly class PaystackClient
         return $payload;
     }
 
-    private function hasValidTestSecretKey(): bool
-    {
-        if ($this->secretKey === null) {
-            return false;
-        }
-
-        return preg_match('/\Ask_test_[\x21-\x7E]+\z/', $this->secretKey) === 1;
-    }
-
     private function hasValidBaseUrl(): bool
     {
         $parts = parse_url($this->baseUrl);
@@ -161,5 +176,22 @@ final readonly class PaystackClient
     private function isTimeout(ConnectionException $exception): bool
     {
         return str_contains($exception->getMessage(), 'cURL error 28');
+    }
+
+    private function isCanonicalSignature(string $signature): bool
+    {
+        if (strlen($signature) !== 128) {
+            return false;
+        }
+
+        for ($index = 0; $index < 128; $index++) {
+            $byte = ord($signature[$index]);
+
+            if (($byte < 48 || $byte > 57) && ($byte < 97 || $byte > 102)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

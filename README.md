@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback rewards, verified/masked payout-account onboarding, deterministic fake-backed payout execution, a Paystack test-mode adapter, and customer cashback visibility. Payout reliability/recovery and the customer achievement endpoint remain later milestones.
+The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback rewards, verified/masked payout-account onboarding, deterministic fake-backed payout execution, a Paystack test-mode adapter, signed Paystack transfer callbacks, first-transition support escalation, and customer cashback visibility. Automatic payout retry/reconciliation remains deferred beyond this assessment; the customer achievement endpoint remains a later milestone.
 
 ## Prerequisite
 
@@ -108,7 +108,7 @@ Controllers only receive, delegate, and respond. The register/login Actions coor
 
 API failures use one compact `application/json` contract. The HTTP status is carried only by the response status line; the body contains a stable machine-readable `code`, a human-readable `message`, and optional validation `errors`. Protocol headers such as `WWW-Authenticate`, `Allow`, and `Retry-After` are preserved.
 
-Each request receives a server-generated request ID for logs and the `X-Request-ID` response header, but diagnostic identifiers are not repeated in the JSON body. Workflow correlation IDs remain internal log/context metadata; clients receive domain identifiers such as purchase references instead.
+Each request receives a server-generated request ID in Laravel Context and the `X-Request-ID` response header, but diagnostic identifiers are not repeated in the JSON body. Workflow correlation IDs are durable database metadata on the purchase-to-reward flow and are copied into selected milestone-log context; Laravel does not infer a database correlation ID for every log statement. Clients receive domain identifiers such as purchase references instead.
 
 ```json
 {
@@ -186,9 +186,10 @@ The real adapter is deliberately restricted to Paystack test mode. Keep the fake
 PAYMENT_DRIVER=paystack
 PAYSTACK_SECRET_KEY=<Paystack test secret>
 PAYSTACK_BASE_URL=https://api.paystack.co
+CASHBACK_SUPPORT_EMAIL=support@example.test
 ```
 
-Only a secret whose prefix identifies a test key is accepted; a missing, public, whitespace-padded, or live key fails before network I/O. Never commit or paste a real secret into documentation, fixtures, logs, screenshots, or issue text. Long-lived Horizon workers must be restarted after changing driver or credential configuration:
+Only a secret whose prefix identifies a test key is accepted; a missing, public, whitespace-padded, malformed, or live key fails before network I/O and cannot authenticate a callback. Paystack uses the same integration secret for API authentication and webhook HMAC—not a separate application-owned webhook secret. Supporting live keys later requires a separately reviewed, mode-aware policy and operational controls; renaming the validation method would not make this service live-ready. Never commit or paste a real secret into documentation, fixtures, logs, screenshots, or issue text. Long-lived Horizon workers must be restarted after changing driver or credential configuration:
 
 ```bash
 docker compose restart horizon
@@ -213,7 +214,57 @@ This check is optional and never gates CI or the required reviewer flow. Immedia
 7. If Paystack returns raw `otp`, stop. The service records `otp_required`/`requires_attention` and intentionally calls none of the finalize, resend, enable-OTP, or disable-OTP endpoints. Correct the Dashboard setting before another separately reviewed attempt.
 8. Restore `PAYMENT_DRIVER=fake` after the smoke test and restart Horizon.
 
-Disabling per-transfer confirmation increases the impact of a stolen secret because a test transfer no longer pauses for human approval. Backend-only test keys, redacted exception boundaries, and the fake default are therefore part of the safety model. Paystack URL-based Transfers Approval may be useful production hardening, but live activation, real money, that approval protocol, webhooks, automatic retries, and reconciliation are outside this phase.
+Disabling per-transfer confirmation increases the impact of a stolen secret because a test transfer no longer pauses for human approval. Backend-only test keys, redacted exception boundaries, and the fake default are therefore part of the safety model. Paystack URL-based Transfers Approval may be useful production hardening, but live activation, real money, that approval protocol, automatic retries, and reconciliation are outside this phase.
+
+### Signed Paystack transfer callbacks
+
+Paystack may complete a transfer after the initiation response, so the service exposes one public server-to-server route:
+
+| Method | Route | Authentication |
+| --- | --- | --- |
+| `POST` | `/api/webhooks/paystack` | `x-paystack-signature`: HMAC SHA-512 of the exact raw body with the configured Paystack test secret |
+
+The route intentionally has no Sanctum bearer middleware: Paystack is not a customer. It authenticates the exact request bytes before JSON parsing, accepts at most 65,536 bytes, requires a canonical lowercase 128-character hexadecimal signature, and compares it with `hash_equals()`. Missing or invalid signatures return `401 invalid_webhook_signature`; oversized bodies return `413 webhook_payload_too_large`; missing, malformed, non-string, or live secret configuration returns `503 webhook_verification_unavailable`. None of those failures creates a receipt or changes a payout.
+
+Every authentic, non-duplicate delivery is handled synchronously in one short PostgreSQL transaction. The service records a privacy-minimized `provider_webhook_receipts` row with internally assigned Paystack provenance, the SHA-256 hash of the exact body, a safe bounded event label/reference when available, an optional restricted link to the fully matched payout attempt, one final handling result, and `received_at`. It does **not** retain the raw body, signature, provider transfer/recipient code, amount, currency, reason, customer data, request/correlation ID, or generic timestamps.
+
+Receipt results answer how this service handled the delivery, not whether the transfer succeeded:
+
+| Receipt result | Meaning |
+| --- | --- |
+| `applied` | A supported, fully matched callback changed the payout state. |
+| `unchanged` | It matched, but the state transition was already applied, stale, contradictory with durable lifecycle state, or no longer allowed. |
+| `invalid` | The authentic JSON, object/type/value shape, or event/status pair was invalid. |
+| `unsupported` | The bounded event name was retained, but this service has no transition rule for it. |
+| `not_found` | No local reward/attempt exists for the valid reference. |
+| `mismatch` | The reference located a candidate, but stored provider, recipient, amount, currency, or known transfer code disagreed. |
+
+Only `transfer.success/success`, `transfer.failed/failed`, and `transfer.reversed/reversed` are supported. Root, `data`, and `recipient` must be JSON objects; amount must be a positive JSON integer; currency and source must be exact `NGN` and `balance`; identity strings must be printable ASCII without edge whitespace. Unknown extra fields are ignored. A reference only locates a candidate: provider, reward/attempt reference, recipient, reward/attempt amount and currency, and any already-known transfer code must still match exactly before the receipt links to an attempt or state changes.
+
+The callback locks the reward first and payout attempt second, matching initiation completion. `started`, `ambiguous`, `pending`, or `otp_required` may become succeeded, failed, or reversed; a succeeded attempt accepts only a later reversal; failed, reversed, and pre-creation conclusions remain unchanged. Success records `paid`; failure/reversal leave the customer owed and set `requires_attention`. The original initiation completion updates only a still-`processing` reward with a still-`started` attempt, so a callback that wins the race cannot be overwritten by a stale HTTP response.
+
+Exact `(provider, body_hash)` redelivery creates no second receipt, transition, log, or alert. Semantically identical JSON with different bytes may create an `unchanged` receipt, while the locked transition remains idempotent. A local transaction failure persists neither receipt nor payout update and returns `500`, allowing Paystack to redeliver the callback; that redelivery is a notification, not another money transfer. Authentic deliveries with a final receipt return empty `200 OK`, including invalid, unsupported, missing, mismatched, and unchanged facts that redelivery cannot repair.
+
+### Payout support escalation and logs
+
+Set a real deployment-only destination with `CASHBACK_SUPPORT_EMAIL`; `.env.example` deliberately uses the non-deliverable `support@example.test`. The first unresolved transition stamps `payout_attempts.support_alert_requested_at` while the attempt is locked, then requests one queued mail notification after commit:
+
+| Attempt fact | Safe issue category | Suggested action |
+| --- | --- | --- |
+| `insufficient_funds` | `funding_required` | Fund and review before another transfer. |
+| `ambiguous` | `status_uncertain` | Verify the existing transfer before considering another. |
+| `retryable_rejection` | `temporary_rejection` | Review provider availability before a manual retry decision. |
+| `permanent_rejection`, `otp_required`, `failed`, `reversed` | `human_review` | Inspect the stored attempt and resolve the outstanding reward. |
+
+`started`, `pending`, and `succeeded` do not alert. The notification contains only local reward/attempt IDs, category, a service-owned reason, and next action—never account/customer data, provider identifiers/text, request payload, signature, or secret. `support_alert_requested_at` proves intent, not queue acceptance or mailbox delivery. A queue-push failure is reported after the financial state commits and is not made atomic by this MVP. With the local default `MAIL_MAILER=log`, the safe mail is written to the Laravel log rather than delivered; production must configure a real mail transport as well as the support address. Horizon and `failed_jobs` remain the delivery diagnostics.
+
+PR #8 emits exactly three privacy-safe milestones after their database transaction commits:
+
+- `cashback.payout.processed` for an initiation result, including whether it changed stored state or lost the race to a callback;
+- `paystack.webhook.recorded` once per newly created receipt, with result-dependent info/debug/warning level;
+- `cashback.payout.support_requested` once before the queue attempt for the first committed support intent.
+
+Their contexts are explicit allowlists of local IDs, statuses, safe service error/category, provider HTTP status/latency where applicable, and the durable workflow correlation ID. Request ID remains in Laravel Context. Logs are searchable evidence; `cashback_rewards` and `payout_attempts` remain the financial source of truth. Post-commit logging and queueing cannot roll back a payout, and this compact feature adds no automatic retry, polling, scheduler, reconciliation worker, or logging framework.
 
 ## Purchase-driven achievements
 
@@ -323,7 +374,7 @@ The four server-controlled fake transfer scenarios map as follows:
 | `insufficient_funds` | `insufficient_funds` | `awaiting_funds` | no |
 | `permanent_failure` | `permanent_rejection` | `requires_attention` | no |
 
-A created fake effect deliberately has no TTL, so a later scenario change cannot erase or replace its transfer identity. The insufficient-funds outcome records its observed zero balance, but the processor does not mistake an advisory balance read for a reservation. PR #5 deliberately adds no automatic retry, webhook, or scheduled reconciliation: `pending`, `processing`, `awaiting_funds`, and `requires_attention` remain visible for the later reliability phase.
+A created fake effect deliberately has no TTL, so a later scenario change cannot erase or replace its transfer identity. The insufficient-funds outcome records its observed zero balance, but the processor does not mistake an advisory balance read for a reservation. The signed Paystack callback above may finalize a matching real-adapter attempt, and the first unresolved result requests support. There is still no automatic retry or scheduled reconciliation: `pending`, `processing`, `awaiting_funds`, and `requires_attention` remain durable operational facts.
 
 After deploying these listeners, run the bounded activation scan once so eligible rewards created before deployment are not left dormant:
 
@@ -382,7 +433,7 @@ The route requires `cashback-rewards:read` and a customer identity. It returns a
 
 Provider ownership, stable references, recipient codes, attempt rows, balance observations, and diagnostics are intentionally absent from this customer response.
 
-Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, cashback clawbacks, Paystack webhooks, and automatic payout recovery are not part of this milestone.
+Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, cashback clawbacks, and automatic payout recovery are not part of this milestone.
 
 ## Daily operation
 
@@ -447,7 +498,7 @@ docker compose run --rm app composer quality
 
 `composer quality` validates `composer.json`, checks formatting, runs Larastan at level 10, enforces the 90% line-coverage floor, and audits locked dependencies.
 
-The automated suite never needs a Paystack account, credential, funded balance, or network connection. Paystack contract coverage uses `Http::fake()`; the optional credentialed sandbox procedure above is separate manual evidence.
+The automated suite never needs a Paystack account, real credential, funded balance, mailbox, or network connection. Paystack API coverage uses `Http::fake()`; callback coverage signs synthetic exact bodies with a reserved test-only fixture secret, and notification coverage fakes or intentionally fails the dispatcher. The optional credentialed sandbox procedure above is separate manual evidence.
 
 Use the mutating formatter only when intentionally fixing style:
 
@@ -461,9 +512,10 @@ Inspect and verify the achievement-to-reward-entitlement wiring:
 docker compose run --rm app php artisan route:list --path=api/internal/purchases
 docker compose run --rm app php artisan route:list --path=api/me/payout-account
 docker compose run --rm app php artisan route:list --path=api/me/cashback-rewards
+docker compose run --rm app php artisan route:list --path=api/webhooks/paystack
 docker compose run --rm app php artisan help cashback:dispatch-actionable
 docker compose run --rm app php artisan event:list
-docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Payouts tests/Feature/Concurrency
+docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Payouts tests/Feature/Payments tests/Feature/Webhooks tests/Feature/Concurrency
 docker compose run --rm app composer quality
 ```
 
@@ -514,5 +566,6 @@ Run the first-time setup commands again afterward.
 - Production secrets must be injected by the deployment environment.
 - Full payout account numbers are accepted only over the protected request boundary for recipient creation and are never persisted or returned.
 - Paystack integration accepts test keys only; the fake remains the default and no live-money path is supported.
+- Paystack callback authentication uses the same test integration secret over exact raw bytes. The receipt retains only a bounded event/reference plus local handling metadata, and structured logs retain only their documented safe allowlists; neither they nor support mail retain secrets, signatures, raw payloads, provider reason text, or account/customer data.
 - The production image runs application processes as the unprivileged `app` user.
 - Horizon is available locally and denied by default in non-local environments until an explicit authorization rule is added with authentication.

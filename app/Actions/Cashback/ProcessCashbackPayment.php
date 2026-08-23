@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Actions\Cashback;
 
 use App\Data\Cashback\CashbackPaymentClaim;
+use App\Data\Cashback\CashbackPayoutSupportRequest;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
 use App\Enums\CashbackRewardStatus;
@@ -16,12 +17,19 @@ use App\Infrastructure\Payments\PaymentProviderRegistry;
 use App\Models\CashbackReward;
 use App\Models\PayoutAccount;
 use App\Models\PayoutAttempt;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use LogicException;
+use SensitiveParameter;
+use Throwable;
 
 final readonly class ProcessCashbackPayment
 {
-    public function __construct(private PaymentProviderRegistry $paymentProviders) {}
+    public function __construct(
+        private PaymentProviderRegistry $paymentProviders,
+        private RequestCashbackPayoutSupport $requestSupport,
+    ) {}
 
     public function handle(int $cashbackRewardId): ?PayoutAttempt
     {
@@ -48,12 +56,55 @@ final readonly class ProcessCashbackPayment
                 errorMessage: 'The persisted payment provider is unavailable.',
             );
 
-            return $this->complete($claim, $result);
+            return $this->finish($claim, $result);
         }
 
         $result = $gateway->initiateTransfer($claim->request);
 
-        return $this->complete($claim, $result);
+        return $this->finish($claim, $result);
+    }
+
+    private function finish(
+        #[SensitiveParameter] CashbackPaymentClaim $claim,
+        #[SensitiveParameter] CashbackTransferResult $result,
+    ): ?PayoutAttempt {
+        $completion = $this->complete($claim, $result);
+
+        if ($completion === null) {
+            return null;
+        }
+
+        $attempt = $completion['attempt'];
+        $reward = $completion['reward'];
+
+        try {
+            Context::scope(function () use ($claim, $result, $attempt, $reward, $completion): void {
+                Log::info('cashback.payout.processed', [
+                    'cashback_reward_id' => $reward->id,
+                    'payout_attempt_id' => $attempt->id,
+                    'provider' => $claim->provider->value,
+                    'state_changed' => $completion['state_changed'],
+                    'attempt_status' => $attempt->status->value,
+                    'reward_status' => $reward->status->value,
+                    'error_code' => $result->errorCode?->value,
+                    'provider_http_status' => $result->httpStatus,
+                    'provider_latency_ms' => $result->latencyMs,
+                    'correlation_id' => $reward->correlation_id,
+                ]);
+            }, ['correlation_id' => $reward->correlation_id]);
+        } catch (Throwable $exception) {
+            try {
+                report($exception);
+            } catch (Throwable) {
+                // The payout transaction has committed; support dispatch must still be attempted.
+            }
+        }
+
+        if ($completion['support'] !== null) {
+            $this->requestSupport->dispatch($completion['support']);
+        }
+
+        return $attempt;
     }
 
     private function claim(int $cashbackRewardId): ?CashbackPaymentClaim
@@ -116,11 +167,19 @@ final readonly class ProcessCashbackPayment
         });
     }
 
+    /**
+     * @return array{
+     *     attempt: PayoutAttempt,
+     *     reward: CashbackReward,
+     *     state_changed: bool,
+     *     support: CashbackPayoutSupportRequest|null
+     * }|null
+     */
     private function complete(
-        CashbackPaymentClaim $claim,
-        CashbackTransferResult $result,
-    ): ?PayoutAttempt {
-        return DB::transaction(function () use ($claim, $result): ?PayoutAttempt {
+        #[SensitiveParameter] CashbackPaymentClaim $claim,
+        #[SensitiveParameter] CashbackTransferResult $result,
+    ): ?array {
+        return DB::transaction(function () use ($claim, $result): ?array {
             $reward = CashbackReward::query()
                 ->whereKey($claim->cashbackRewardId)
                 ->lockForUpdate()
@@ -136,47 +195,58 @@ final readonly class ProcessCashbackPayment
                 ->lockForUpdate()
                 ->first();
 
-            if ($attempt === null
-                || $reward->status !== CashbackRewardStatus::Processing
-                || $attempt->status !== PayoutAttemptStatus::Started) {
-                return $attempt;
+            if ($attempt === null) {
+                return null;
             }
 
-            $completedAt = now();
-            $attempt->fill([
-                'status' => $result->status,
-                'provider_transfer_code' => $result->transferCode,
-                'provider_http_status' => $result->httpStatus,
-                'provider_error_code' => $result->errorCode?->value,
-                'provider_error_message' => $result->errorMessage,
-                'provider_latency_ms' => $result->latencyMs,
-                'observed_balance_minor' => $result->observedBalanceMinor,
-                'succeeded_at' => $result->status === PayoutAttemptStatus::Succeeded
-                    ? $completedAt
-                    : null,
-                'reversed_at' => $result->status === PayoutAttemptStatus::Reversed
-                    ? $completedAt
-                    : null,
-                'completed_at' => $completedAt,
-            ])->save();
+            $support = null;
 
-            $rewardValues = [
-                'status' => $this->rewardStatusFor($result->status),
-                'last_error_code' => $result->errorCode?->value,
-                'last_error_message' => $result->errorMessage,
-                'paid_at' => $result->status === PayoutAttemptStatus::Succeeded
-                    ? $completedAt
-                    : null,
+            if ($reward->status === CashbackRewardStatus::Processing
+                && $attempt->status === PayoutAttemptStatus::Started) {
+                $completedAt = now();
+                $attempt->fill([
+                    'status' => $result->status,
+                    'provider_transfer_code' => $result->transferCode,
+                    'provider_http_status' => $result->httpStatus,
+                    'provider_error_code' => $result->errorCode?->value,
+                    'provider_error_message' => $result->errorMessage,
+                    'provider_latency_ms' => $result->latencyMs,
+                    'observed_balance_minor' => $result->observedBalanceMinor,
+                    'succeeded_at' => $result->status === PayoutAttemptStatus::Succeeded
+                        ? $completedAt
+                        : null,
+                    'reversed_at' => $result->status === PayoutAttemptStatus::Reversed
+                        ? $completedAt
+                        : null,
+                    'completed_at' => $completedAt,
+                ]);
+
+                $rewardValues = [
+                    'status' => $this->rewardStatusFor($result->status),
+                    'last_error_code' => $result->errorCode?->value,
+                    'last_error_message' => $result->errorMessage,
+                    'paid_at' => $result->status === PayoutAttemptStatus::Succeeded
+                        ? $completedAt
+                        : null,
+                ];
+
+                if ($result->observedBalanceMinor !== null) {
+                    $rewardValues['last_observed_balance_minor'] = $result->observedBalanceMinor;
+                    $rewardValues['balance_observed_at'] = $completedAt;
+                }
+
+                $reward->fill($rewardValues);
+                $support = $this->requestSupport->markWhileLocked($reward, $attempt);
+                $attempt->save();
+                $reward->save();
+            }
+
+            return [
+                'attempt' => $attempt,
+                'reward' => $reward,
+                'state_changed' => $attempt->wasChanged('status'),
+                'support' => $support,
             ];
-
-            if ($result->observedBalanceMinor !== null) {
-                $rewardValues['last_observed_balance_minor'] = $result->observedBalanceMinor;
-                $rewardValues['balance_observed_at'] = $completedAt;
-            }
-
-            $reward->fill($rewardValues)->save();
-
-            return $attempt;
         });
     }
 
@@ -190,7 +260,7 @@ final readonly class ProcessCashbackPayment
             PayoutAttemptStatus::Pending => CashbackRewardStatus::Pending,
             PayoutAttemptStatus::Succeeded => CashbackRewardStatus::Paid,
             PayoutAttemptStatus::InsufficientFunds => CashbackRewardStatus::AwaitingFunds,
-            PayoutAttemptStatus::RetryableRejection => CashbackRewardStatus::Retrying,
+            PayoutAttemptStatus::RetryableRejection => CashbackRewardStatus::RequiresAttention,
             PayoutAttemptStatus::PermanentRejection,
             PayoutAttemptStatus::OtpRequired,
             PayoutAttemptStatus::Failed,

@@ -6,6 +6,7 @@ use App\Enums\TokenAbility;
 use App\Http\Controllers\AuthController;
 use App\Http\Controllers\CashbackRewardController;
 use App\Http\Controllers\PayoutAccountController;
+use App\Http\Controllers\PaystackWebhookController;
 use App\Http\Controllers\PurchaseController;
 use Illuminate\Support\Facades\Route;
 
@@ -17,6 +18,9 @@ Route::prefix('auth')->name('auth.')->group(function (): void {
         ->middleware('throttle:login')
         ->name('login');
 });
+
+Route::post('/webhooks/paystack', PaystackWebhookController::class)
+    ->name('webhooks.paystack');
 
 Route::middleware('auth:sanctum')->group(function (): void {
     Route::post('/auth/logout', [AuthController::class, 'logout'])->name('auth.logout');

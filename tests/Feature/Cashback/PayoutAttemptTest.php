@@ -58,8 +58,19 @@ it('creates a coherent durable attempt snapshot with typed relationships and cas
         ->and($attempt->completed_at)->toBeNull()
         ->and($attempt->succeeded_at)->toBeNull()
         ->and($attempt->reversed_at)->toBeNull()
+        ->and($attempt->support_alert_requested_at)->toBeNull()
         ->and($reward->payoutAttempts()->firstOrFail()->is($attempt))->toBeTrue()
         ->and($account->payoutAttempts()->firstOrFail()->is($attempt))->toBeTrue();
+});
+
+it('casts the support-request intent timestamp without claiming delivery', function (): void {
+    $attempt = PayoutAttempt::factory()->create([
+        'support_alert_requested_at' => '2026-08-23T18:30:00+00:00',
+    ]);
+
+    expect($attempt->support_alert_requested_at)->toBeInstanceOf(CarbonImmutable::class)
+        ->and($attempt->support_alert_requested_at?->toIso8601String())
+        ->toBe('2026-08-23T18:30:00+00:00');
 });
 
 it('enforces one factual attempt number per reward', function (): void {

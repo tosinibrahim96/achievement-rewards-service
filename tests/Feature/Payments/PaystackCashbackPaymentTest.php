@@ -14,6 +14,7 @@ use App\Models\UserBadge;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Http\Client\Request;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Notification;
 use Symfony\Component\HttpFoundation\Response as HttpResponse;
 
 uses(DatabaseMigrations::class);
@@ -41,6 +42,7 @@ beforeEach(function (): void {
     config()->set('payments.default', PaymentProvider::Fake->value);
     config()->set('payments.paystack.secret_key', 'sk_test_inert_processor_key');
     Http::preventStrayRequests();
+    Notification::fake();
 });
 
 it('persists real-adapter outcomes against the Paystack-owned attempt without using the fake default', function (
@@ -58,6 +60,12 @@ it('persists real-adapter outcomes against the Paystack-owned attempt without us
             'status' => false,
             'message' => 'Your balance is not enough to fulfill this request',
         ], HttpResponse::HTTP_BAD_REQUEST)]);
+    } elseif ($scenario === 'rate_limit') {
+        Http::fake(['*' => Http::response([
+            'status' => false,
+            'message' => 'Rate limit exceeded',
+            'code' => 'rate_limited',
+        ], HttpResponse::HTTP_TOO_MANY_REQUESTS)]);
     } else {
         Http::fake(['*' => Http::response([
             'status' => true,
@@ -97,6 +105,7 @@ it('persists real-adapter outcomes against the Paystack-owned attempt without us
     'live-like pending' => ['pending', PayoutAttemptStatus::Pending, CashbackRewardStatus::Pending, null],
     'unexpected OTP' => ['otp', PayoutAttemptStatus::OtpRequired, CashbackRewardStatus::RequiresAttention, 'otp_required'],
     'insufficient funds' => ['insufficient', PayoutAttemptStatus::InsufficientFunds, CashbackRewardStatus::AwaitingFunds, 'insufficient_funds'],
+    'rate limited needs attention without a retry worker' => ['rate_limit', PayoutAttemptStatus::RetryableRejection, CashbackRewardStatus::RequiresAttention, 'rate_limited'],
     'timeout ambiguity' => ['timeout', PayoutAttemptStatus::Ambiguous, CashbackRewardStatus::Processing, 'provider_timeout'],
 ]);
 

@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\RequestCashbackPayoutSupport;
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
@@ -135,7 +136,10 @@ it('commits a complete attempt snapshot before provider work and does not prefli
             latencyMs: 7,
         ),
     );
-    $action = new ProcessCashbackPayment(new PaymentProviderRegistry([], [$gateway], 'fake'));
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
 
     $attempt = $action->handle($reward->id);
     $reward->refresh();
@@ -269,7 +273,10 @@ it('keeps the durable claim when the worker fails after the claim commit', funct
         },
         new RuntimeException('Simulated worker failure after claim.'),
     );
-    $action = new ProcessCashbackPayment(new PaymentProviderRegistry([], [$gateway], 'fake'));
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
 
     expect(fn () => $action->handle($reward->id))->toThrow(
         RuntimeException::class,
@@ -288,7 +295,10 @@ it('keeps the durable claim when the worker fails after the claim commit', funct
 
 it('maps an unavailable persisted provider to attention without falling back', function (): void {
     [$reward] = payableCashbackReward();
-    $action = new ProcessCashbackPayment(new PaymentProviderRegistry([], [], 'fake'));
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
 
     $attempt = $action->handle($reward->id);
     $reward->refresh();
@@ -309,7 +319,10 @@ it('keeps a registered gateway failure discoverable instead of calling it a conc
         },
         PaymentProviderException::unavailable(),
     );
-    $action = new ProcessCashbackPayment(new PaymentProviderRegistry([], [$gateway], 'fake'));
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
 
     expect(fn () => $action->handle($reward->id))->toThrow(PaymentProviderException::class);
 
@@ -346,7 +359,10 @@ it('does not blindly reinitiate after a fake effect exists but its response is l
         },
         new RuntimeException('Simulated response loss after provider acceptance.'),
     );
-    $action = new ProcessCashbackPayment(new PaymentProviderRegistry([], [$gateway], 'fake'));
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
 
     expect(fn () => $action->handle($reward->id))->toThrow(
         RuntimeException::class,
@@ -386,7 +402,10 @@ it('does not overwrite a newer durable lifecycle fact with an older provider res
             transferCode: 'TRF_OLDER_RESPONSE',
         ),
     );
-    $action = new ProcessCashbackPayment(new PaymentProviderRegistry([], [$gateway], 'fake'));
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
 
     $attempt = $action->handle($reward->id);
     $reward->refresh();

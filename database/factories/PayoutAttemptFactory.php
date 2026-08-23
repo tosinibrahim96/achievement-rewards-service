@@ -51,6 +51,7 @@ class PayoutAttemptFactory extends Factory
             'observed_balance_minor' => null,
             'succeeded_at' => null,
             'reversed_at' => null,
+            'support_alert_requested_at' => null,
             'started_at' => now(),
             'completed_at' => null,
         ];

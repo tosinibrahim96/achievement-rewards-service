@@ -33,6 +33,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property int|null $observed_balance_minor
  * @property CarbonImmutable|null $succeeded_at
  * @property CarbonImmutable|null $reversed_at
+ * @property CarbonImmutable|null $support_alert_requested_at
  * @property CarbonImmutable $started_at
  * @property CarbonImmutable|null $completed_at
  * @property-read CashbackReward $cashbackReward
@@ -56,6 +57,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'observed_balance_minor',
     'succeeded_at',
     'reversed_at',
+    'support_alert_requested_at',
     'started_at',
     'completed_at',
 ])]
@@ -90,6 +92,7 @@ class PayoutAttempt extends Model
             'observed_balance_minor' => 'integer',
             'succeeded_at' => 'immutable_datetime',
             'reversed_at' => 'immutable_datetime',
+            'support_alert_requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
             'completed_at' => 'immutable_datetime',
         ];
