@@ -19,7 +19,7 @@ return [
     ],
 
     'payout_account_lock' => [
-        'seconds' => 30,
+        'seconds' => 60,
         'wait_seconds' => 5,
     ],
 ];

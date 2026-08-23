@@ -11,6 +11,7 @@ use App\Domain\Achievements\LifetimeSpendProgressCalculator;
 use App\Domain\Achievements\PurchaseCountProgressCalculator;
 use App\Infrastructure\Payments\FakeCashbackTransferGateway;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
+use App\Infrastructure\Payments\PaystackTransferRecipientGateway;
 use App\Models\User;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
@@ -32,7 +33,7 @@ class AppServiceProvider extends ServiceProvider
         );
 
         $this->app->tag(
-            [FakeTransferRecipientGateway::class],
+            [FakeTransferRecipientGateway::class, PaystackTransferRecipientGateway::class],
             TransferRecipientGateway::class,
         );
 

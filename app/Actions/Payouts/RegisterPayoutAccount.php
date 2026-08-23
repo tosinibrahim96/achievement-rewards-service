@@ -29,7 +29,7 @@ final readonly class RegisterPayoutAccount
 
     public function __construct(
         private PaymentProviderRegistry $paymentProviders,
-        #[Config('payments.payout_account_lock.seconds', 30)] private int $lockSeconds,
+        #[Config('payments.payout_account_lock.seconds', 60)] private int $lockSeconds,
         #[Config('payments.payout_account_lock.wait_seconds', 5)] private int $lockWaitSeconds,
     ) {}
 
