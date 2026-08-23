@@ -4,13 +4,16 @@ declare(strict_types=1);
 
 use App\Actions\Achievements\EvaluatePurchaseAchievements;
 use App\Actions\Achievements\UnlockAchievement;
+use App\Enums\AchievementMetric;
 use App\Events\AchievementUnlocked;
 use App\Http\Middleware\AssignRequestId;
 use App\Models\Achievement;
+use App\Models\AchievementGroup;
 use App\Models\Purchase;
 use App\Models\User;
 use App\Models\UserAchievement;
 use Database\Seeders\AchievementCatalogueSeeder;
+use Illuminate\Database\Events\QueryExecuted;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
@@ -66,7 +69,9 @@ it('does not retain an unlock or dispatch its event when the transaction rolls b
             throw new RuntimeException('Force achievement rollback.');
         });
     } catch (RuntimeException) {
-        // The rollback is the behaviour under test.
+        /*
+         * The rollback is the behaviour under test.
+         */
     }
 
     expect(UserAchievement::query()->count())->toBe(0);
@@ -102,6 +107,46 @@ it('dispatches one ordered event for every newly crossed achievement', function 
         ->all();
 
     expect($names)->toBe(['First Purchase', '3 Purchases', '5 Purchases']);
+});
+
+it('calculates progress once when active groups use the same metric', function (): void {
+    Event::fake([AchievementUnlocked::class]);
+    $this->seed(AchievementCatalogueSeeder::class);
+    $user = User::factory()->create();
+    $purchase = Purchase::factory()->for($user)->create(['amount_minor' => 1]);
+    $extraPurchaseCountGroup = AchievementGroup::factory()->create([
+        'code' => 'repeat-purchase-count',
+        'metric' => AchievementMetric::PurchaseCount,
+        'is_active' => true,
+    ]);
+    $achievementUsingSameMetric = Achievement::factory()->for($extraPurchaseCountGroup, 'group')->create([
+        'name' => 'Repeat Purchase Count',
+        'threshold' => 1,
+        'is_active' => true,
+    ]);
+    $progressQueries = [];
+
+    DB::listen(static function (QueryExecuted $query) use (&$progressQueries): void {
+        if (str_contains($query->sql, 'from "purchases"')) {
+            $progressQueries[] = $query->sql;
+        }
+    });
+
+    app(EvaluatePurchaseAchievements::class)->handle($purchase);
+
+    expect($progressQueries)->toHaveCount(2)
+        ->and($progressQueries[0])->toContain('count(*)')
+        ->and($progressQueries[1])->toContain('sum("amount_minor")')
+        ->and(UserAchievement::query()
+            ->where('user_id', $user->id)
+            ->where('achievement_id', $achievementUsingSameMetric->id)
+            ->exists())->toBeTrue();
+
+    Event::assertDispatched(
+        AchievementUnlocked::class,
+        fn (AchievementUnlocked $event): bool => $event->achievement_name === $achievementUsingSameMetric->name
+            && $event->user->is($user),
+    );
 });
 
 it('logs all newly unlocked achievement names with only allowed fields', function (): void {
@@ -183,7 +228,9 @@ it('does not log achievement results when the outer transaction rolls back', fun
             throw new RuntimeException('Force achievement evaluation rollback.');
         });
     } catch (RuntimeException) {
-        // The rollback is the behaviour under test.
+        /*
+         * The rollback is the behaviour under test.
+         */
     }
 
     expect(UserAchievement::query()->count())->toBe(0);

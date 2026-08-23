@@ -75,7 +75,9 @@ it('rolls back the badge and reward without dispatching or logging', function ()
             throw new RuntimeException('Force badge rollback.');
         });
     } catch (RuntimeException) {
-        // The rollback is the behaviour under test.
+        /*
+         * The rollback is the behaviour under test.
+         */
     }
 
     expect(UserBadge::query()->count())->toBe(0)

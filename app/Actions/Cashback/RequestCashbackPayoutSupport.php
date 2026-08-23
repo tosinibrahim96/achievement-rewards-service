@@ -77,14 +77,14 @@ final readonly class RequestCashbackPayoutSupport
                     'correlation_id' => $request->correlationId,
                 ]);
             } catch (Throwable $exception) {
-                $this->reportSafely($exception);
+                $this->reportSupportFailure($exception);
             }
 
             try {
                 Notification::route('mail', $this->supportEmail)
                     ->notify(new CashbackPayoutRequiresAttention($request));
             } catch (Throwable $exception) {
-                $this->reportSafely($exception);
+                $this->reportSupportFailure($exception);
             }
         }, ['correlation_id' => $request->correlationId]);
     }
@@ -105,12 +105,15 @@ final readonly class RequestCashbackPayoutSupport
         };
     }
 
-    private function reportSafely(Throwable $exception): void
+    private function reportSupportFailure(Throwable $exception): void
     {
         try {
             report($exception);
         } catch (Throwable) {
-            // State is already committed; reporting cannot make queueing or delivery atomic.
+            /*
+             * State is already committed. Reporting cannot make the separate log,
+             * queue handoff, or eventual mail delivery one atomic operation.
+             */
         }
     }
 }

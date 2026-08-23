@@ -213,6 +213,24 @@ it('authenticates exact bytes and atomically applies a matching success callback
     Http::assertNothingSent();
 });
 
+it('applies a matching success callback from every open attempt state', function (
+    PayoutAttemptStatus $initialStatus,
+): void {
+    [$reward, $attempt] = paystackWebhookAttempt($initialStatus);
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+
+    postPaystackWebhook($this, $body)->assertOk();
+
+    expect(ProviderWebhookReceipt::query()->sole()->result)
+        ->toBe(ProviderWebhookReceiptResult::Applied)
+        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Succeeded)
+        ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Paid);
+})->with([
+    'started' => PayoutAttemptStatus::Started,
+    'ambiguous' => PayoutAttemptStatus::Ambiguous,
+    'OTP required' => PayoutAttemptStatus::OtpRequired,
+]);
+
 it('rejects missing malformed mismatched and byte-mutated signatures without persistence', function (
     string $signatureKind,
 ): void {
@@ -598,19 +616,51 @@ it('retains a safe reference for an unsupported event without interpreting its p
     Notification::assertNothingSent();
 });
 
-it('leaves a matching payment unchanged when reward and attempt statuses disagree', function (): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $reward->update(['status' => CashbackRewardStatus::Processing]);
-    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+it('leaves a matching payment unchanged when reward and attempt statuses disagree', function (
+    PayoutAttemptStatus $attemptStatus,
+    CashbackRewardStatus $wrongRewardStatus,
+    string $event,
+    string $transferStatus,
+): void {
+    [$reward, $attempt] = paystackWebhookAttempt($attemptStatus);
+    $reward->update(['status' => $wrongRewardStatus]);
+    $body = encodePaystackWebhook(
+        paystackWebhookPayload($reward, $attempt, $event, $transferStatus),
+    );
 
     postPaystackWebhook($this, $body)->assertOk();
 
     expect(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Unchanged)
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Pending)
-        ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Processing);
+        ->and($attempt->fresh()?->status)->toBe($attemptStatus)
+        ->and($reward->fresh()?->status)->toBe($wrongRewardStatus);
     Notification::assertNothingSent();
-});
+})->with([
+    'started attempt with pending reward' => [
+        PayoutAttemptStatus::Started,
+        CashbackRewardStatus::Pending,
+        'transfer.success',
+        'success',
+    ],
+    'pending attempt with processing reward' => [
+        PayoutAttemptStatus::Pending,
+        CashbackRewardStatus::Processing,
+        'transfer.success',
+        'success',
+    ],
+    'OTP attempt with processing reward' => [
+        PayoutAttemptStatus::OtpRequired,
+        CashbackRewardStatus::Processing,
+        'transfer.success',
+        'success',
+    ],
+    'succeeded attempt with processing reward' => [
+        PayoutAttemptStatus::Succeeded,
+        CashbackRewardStatus::Processing,
+        'transfer.reversed',
+        'reversed',
+    ],
+]);
 
 it('still attempts support when the committed callback receipt log fails', function (): void {
     Log::spy();

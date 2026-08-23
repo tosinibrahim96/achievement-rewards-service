@@ -24,7 +24,7 @@ final readonly class PaystackResponse
         }
     }
 
-    public function providerStatus(): ?bool
+    public function operationSucceeded(): ?bool
     {
         return match ($this->payload['status'] ?? null) {
             true => true,
@@ -48,17 +48,17 @@ final readonly class PaystackResponse
         return $this->nonEmptyString($this->payload['code'] ?? null);
     }
 
-    public function successful(): bool
+    public function hasSuccessfulHttpStatus(): bool
     {
         return $this->httpStatus >= 200 && $this->httpStatus < 300;
     }
 
-    public function clientError(): bool
+    public function hasClientErrorHttpStatus(): bool
     {
         return $this->httpStatus >= 400 && $this->httpStatus < 500;
     }
 
-    public function serverError(): bool
+    public function hasServerErrorHttpStatus(): bool
     {
         return $this->httpStatus >= 500;
     }

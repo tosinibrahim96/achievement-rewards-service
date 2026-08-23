@@ -77,7 +77,7 @@ final readonly class PaystackTransferRecipientGateway implements TransferRecipie
     private function successfulData(
         #[SensitiveParameter] PaystackResponse $response,
     ): array {
-        if (! $response->successful() || $response->providerStatus() !== true) {
+        if (! $response->hasSuccessfulHttpStatus() || $response->operationSucceeded() !== true) {
             $this->throwFailure($response);
         }
 
@@ -97,12 +97,12 @@ final readonly class PaystackTransferRecipientGateway implements TransferRecipie
         if ($response->httpStatus === HttpResponse::HTTP_UNAUTHORIZED
             || $response->httpStatus === HttpResponse::HTTP_FORBIDDEN
             || $response->httpStatus === HttpResponse::HTTP_TOO_MANY_REQUESTS
-            || $response->serverError()) {
+            || $response->hasServerErrorHttpStatus()) {
             throw PaymentProviderException::unavailable();
         }
 
-        if ($response->providerStatus() === false
-            && ($response->successful() || $response->clientError())) {
+        if ($response->operationSucceeded() === false
+            && ($response->hasSuccessfulHttpStatus() || $response->hasClientErrorHttpStatus())) {
             throw PaymentProviderException::recipientRejected();
         }
 

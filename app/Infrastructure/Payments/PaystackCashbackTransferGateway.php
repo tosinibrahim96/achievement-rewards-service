@@ -39,11 +39,11 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
     {
         $response = $this->client->get('balance');
 
-        if ($response->successful() && $response->providerStatus() === null) {
+        if ($response->hasSuccessfulHttpStatus() && $response->operationSucceeded() === null) {
             throw PaymentProviderException::malformedResponse();
         }
 
-        if (! $response->successful() || $response->providerStatus() !== true) {
+        if (! $response->hasSuccessfulHttpStatus() || $response->operationSucceeded() !== true) {
             throw PaymentProviderException::unavailable();
         }
 
@@ -102,11 +102,15 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             return $this->ambiguousTransportFailure($exception);
         }
 
-        if ($response->successful() && $response->providerStatus() === true) {
+        if ($response->hasSuccessfulHttpStatus() && $response->operationSucceeded() === true) {
             return $this->mapCreatedTransfer($response, $request);
         }
 
-        if ($response->providerStatus() === true) {
+        /*
+         * Paystack says the operation succeeded even though HTTP disagrees. A
+         * retry could duplicate a transfer, so this cannot be called a rejection.
+         */
+        if ($response->operationSucceeded() === true) {
             return $this->ambiguousResponse(
                 $response,
                 $this->transferCodeFrom($response),
@@ -125,7 +129,11 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
 
         $response = $this->client->get('transfer/verify/'.rawurlencode($providerReference));
 
-        if ($response->providerStatus() === false && $this->isTransferNotFound($response)) {
+        if ($response->operationSucceeded() === false && $this->isTransferNotFound($response)) {
+            /*
+             * Only the known 404, false operation result, and absent data together
+             * prove no transfer was found. Contradictory data remains ambiguous.
+             */
             if ($response->data() !== null) {
                 return new CashbackTransferVerification(
                     $this->ambiguousResponse(
@@ -139,11 +147,11 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             return new CashbackTransferVerification(null);
         }
 
-        if ($response->successful() && $response->providerStatus() === null) {
+        if ($response->hasSuccessfulHttpStatus() && $response->operationSucceeded() === null) {
             throw PaymentProviderException::malformedResponse();
         }
 
-        if (! $response->successful() || $response->providerStatus() !== true) {
+        if (! $response->hasSuccessfulHttpStatus() || $response->operationSucceeded() !== true) {
             throw PaymentProviderException::unavailable();
         }
 
@@ -173,7 +181,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             ? $request->providerReference
             : $providerReference;
         $transferCode = $this->nonEmptyString($data['transfer_code'] ?? null);
-        $status = $this->nonEmptyString($data['status'] ?? null);
+        $providerTransferStatus = $this->nonEmptyString($data['status'] ?? null);
 
         if ($expectedReference === null
             || $reference === null
@@ -186,7 +194,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        $mappedStatus = match ($status) {
+        $attemptStatus = match ($providerTransferStatus) {
             'success' => PayoutAttemptStatus::Succeeded,
             'pending', 'received' => PayoutAttemptStatus::Pending,
             'otp' => PayoutAttemptStatus::OtpRequired,
@@ -195,7 +203,11 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             default => PayoutAttemptStatus::Ambiguous,
         };
 
-        if ($mappedStatus !== PayoutAttemptStatus::Ambiguous && $transferCode === null) {
+        /*
+         * A known lifecycle state without a transfer identity is still unsafe:
+         * retrying could create a duplicate that cannot be tied to this response.
+         */
+        if ($attemptStatus !== PayoutAttemptStatus::Ambiguous && $transferCode === null) {
             return $this->ambiguousResponse(
                 $response,
                 null,
@@ -203,7 +215,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        if ($mappedStatus === PayoutAttemptStatus::Ambiguous) {
+        if ($attemptStatus === PayoutAttemptStatus::Ambiguous) {
             return $this->ambiguousResponse(
                 $response,
                 $transferCode,
@@ -211,13 +223,13 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        $errorCode = match ($mappedStatus) {
+        $errorCode = match ($attemptStatus) {
             PayoutAttemptStatus::OtpRequired => CashbackTransferErrorCode::OtpRequired,
             PayoutAttemptStatus::Failed => CashbackTransferErrorCode::TransferFailed,
             PayoutAttemptStatus::Reversed => CashbackTransferErrorCode::TransferReversed,
             default => null,
         };
-        $errorMessage = match ($mappedStatus) {
+        $errorMessage = match ($attemptStatus) {
             PayoutAttemptStatus::OtpRequired => 'Paystack requires transfer confirmation.',
             PayoutAttemptStatus::Failed => 'Paystack reported that the transfer failed.',
             PayoutAttemptStatus::Reversed => 'Paystack reported that the transfer was reversed.',
@@ -225,7 +237,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         };
 
         return new CashbackTransferResult(
-            status: $mappedStatus,
+            status: $attemptStatus,
             transferCode: $transferCode,
             httpStatus: $response->httpStatus,
             errorCode: $errorCode,
@@ -256,6 +268,10 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
     private function mapRejectedTransfer(
         #[SensitiveParameter] PaystackResponse $response,
     ): CashbackTransferResult {
+        /*
+         * Response data may describe a transfer that Paystack created despite an
+         * error envelope. Only a data-free rejection may enter the safe mappings.
+         */
         if ($response->data() !== null) {
             return $this->ambiguousResponse(
                 $response,
@@ -266,7 +282,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
 
         $normalizedMessage = $this->normalizedMessage($response->message());
 
-        if ($response->serverError() || $response->providerStatus() === null) {
+        if ($response->hasServerErrorHttpStatus() || $response->operationSucceeded() === null) {
             return $this->ambiguousResponse(
                 $response,
                 null,
@@ -274,7 +290,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        if (! $response->successful() && ! $response->clientError()) {
+        if (! $response->hasSuccessfulHttpStatus() && ! $response->hasClientErrorHttpStatus()) {
             return $this->ambiguousResponse(
                 $response,
                 null,
@@ -282,7 +298,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        if ($response->providerStatus() === false
+        if ($response->operationSucceeded() === false
             && in_array($response->httpStatus, [
                 HttpResponse::HTTP_UNAUTHORIZED,
                 HttpResponse::HTTP_FORBIDDEN,
@@ -297,7 +313,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         }
 
         if ($response->httpStatus === HttpResponse::HTTP_BAD_REQUEST
-            && $response->providerStatus() === false
+            && $response->operationSucceeded() === false
             && $this->isInsufficientBalanceMessage($normalizedMessage)) {
             return new CashbackTransferResult(
                 status: PayoutAttemptStatus::InsufficientFunds,
@@ -308,7 +324,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        if ($response->providerStatus() === false
+        if ($response->operationSucceeded() === false
             && ($response->httpStatus === HttpResponse::HTTP_TOO_MANY_REQUESTS
                 || $response->providerCode() === self::RATE_LIMITED_PROVIDER_CODE)) {
             return new CashbackTransferResult(

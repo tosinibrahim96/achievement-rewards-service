@@ -269,7 +269,9 @@ it('keeps the durable claim when the worker fails after the claim commit', funct
     [$reward] = payableCashbackReward();
     $gateway = new InspectingCashbackTransferGateway(
         static function (CashbackTransferRequest $request): void {
-            // Reaching the provider boundary is sufficient for this crash simulation.
+            /*
+             * Reaching the provider boundary is sufficient for this crash simulation.
+             */
         },
         new RuntimeException('Simulated worker failure after claim.'),
     );
@@ -315,7 +317,9 @@ it('keeps a registered gateway failure discoverable instead of calling it a conc
     [$reward] = payableCashbackReward();
     $gateway = new InspectingCashbackTransferGateway(
         static function (CashbackTransferRequest $request): void {
-            // Reaching this callback proves that registry lookup itself succeeded.
+            /*
+             * Reaching this callback proves that registry lookup itself succeeded.
+             */
         },
         PaymentProviderException::unavailable(),
     );

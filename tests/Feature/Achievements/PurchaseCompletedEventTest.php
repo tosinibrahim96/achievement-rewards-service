@@ -63,7 +63,9 @@ it('rolls back the purchase without dispatching or logging', function (): void {
             throw new RuntimeException('Force rollback.');
         });
     } catch (RuntimeException) {
-        // The rollback is the behaviour under test.
+        /*
+         * The rollback is the behaviour under test.
+         */
     }
 
     expect(Purchase::query()->count())->toBe(0)

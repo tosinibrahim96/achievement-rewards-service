@@ -16,6 +16,20 @@ use Symfony\Component\HttpFoundation\Response as HttpResponse;
 
 final readonly class PaystackClient
 {
+    private const string TEST_SECRET_KEY_PREFIX = 'sk_test_';
+
+    private const int FIRST_VISIBLE_ASCII_BYTE = 33;
+
+    private const int LAST_VISIBLE_ASCII_BYTE = 126;
+
+    private const string WEBHOOK_SIGNATURE_ALGORITHM = 'sha512';
+
+    private const int WEBHOOK_SIGNATURE_LENGTH = 128;
+
+    private const string LOWERCASE_HEX_CHARACTERS = '0123456789abcdef';
+
+    private const int NANOSECONDS_PER_MILLISECOND = 1_000_000;
+
     public function __construct(
         private Factory $http,
         #[Config('payments.paystack.secret_key')]
@@ -68,7 +82,10 @@ final readonly class PaystackClient
             throw PaymentProviderException::timeout();
         }
 
-        $latencyMs = max(0, intdiv(hrtime(true) - $startedAt, 1_000_000));
+        $latencyMs = max(
+            0,
+            intdiv(hrtime(true) - $startedAt, self::NANOSECONDS_PER_MILLISECOND),
+        );
 
         return new PaystackResponse(
             httpStatus: $response->status(),
@@ -87,24 +104,53 @@ final readonly class PaystackClient
 
     public function hasValidTestSecretKey(): bool
     {
-        if (! is_string($this->secretKey)) {
+        if (! is_string($this->secretKey)
+            || ! str_starts_with($this->secretKey, self::TEST_SECRET_KEY_PREFIX)
+            || strlen($this->secretKey) === strlen(self::TEST_SECRET_KEY_PREFIX)) {
             return false;
         }
 
-        return preg_match('/\Ask_test_[\x21-\x7E]+\z/', $this->secretKey) === 1;
+        $secretLength = strlen($this->secretKey);
+
+        /*
+         * A secret suffix may contain visible ASCII from `!` (byte 33) through
+         * `~` (byte 126). Space, control bytes, DEL, and non-ASCII are rejected
+         * before the secret can be placed in an Authorization header.
+         */
+        for ($index = strlen(self::TEST_SECRET_KEY_PREFIX); $index < $secretLength; $index++) {
+            $byte = ord($this->secretKey[$index]);
+
+            if ($byte < self::FIRST_VISIBLE_ASCII_BYTE
+                || $byte > self::LAST_VISIBLE_ASCII_BYTE) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
-    public function matchesWebhookSignature(
+    public function signatureMatchesBody(
         #[SensitiveParameter] string $rawBody,
         #[SensitiveParameter] string $signature,
     ): bool {
-        if (! $this->hasValidTestSecretKey() || ! $this->isCanonicalSignature($signature)) {
+        if (! $this->hasValidTestSecretKey() || ! $this->hasExpectedSignatureFormat($signature)) {
             return false;
         }
 
         /** @var non-empty-string $secretKey */
         $secretKey = $this->secretKey;
-        $expectedSignature = hash_hmac('sha512', $rawBody, $secretKey);
+
+        /*
+         * HMAC combines the shared secret with the exact request bytes. SHA-512
+         * returns 128 lowercase hexadecimal characters here, and hash_equals()
+         * compares them without stopping early based on matching content.
+         * This authenticates the bytes; it does not encrypt them or stop replay.
+         */
+        $expectedSignature = hash_hmac(
+            self::WEBHOOK_SIGNATURE_ALGORITHM,
+            $rawBody,
+            $secretKey,
+        );
 
         return hash_equals($expectedSignature, $signature);
     }
@@ -178,16 +224,14 @@ final readonly class PaystackClient
         return str_contains($exception->getMessage(), 'cURL error 28');
     }
 
-    private function isCanonicalSignature(string $signature): bool
+    private function hasExpectedSignatureFormat(string $signature): bool
     {
-        if (strlen($signature) !== 128) {
+        if (strlen($signature) !== self::WEBHOOK_SIGNATURE_LENGTH) {
             return false;
         }
 
-        for ($index = 0; $index < 128; $index++) {
-            $byte = ord($signature[$index]);
-
-            if (($byte < 48 || $byte > 57) && ($byte < 97 || $byte > 102)) {
+        for ($index = 0; $index < self::WEBHOOK_SIGNATURE_LENGTH; $index++) {
+            if (! str_contains(self::LOWERCASE_HEX_CHARACTERS, $signature[$index])) {
                 return false;
             }
         }

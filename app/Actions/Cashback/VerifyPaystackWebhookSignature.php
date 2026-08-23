@@ -12,9 +12,9 @@ use SensitiveParameter;
 
 final readonly class VerifyPaystackWebhookSignature
 {
-    public const int MAX_BODY_BYTES = 65_536;
+    public const int MAX_BODY_BYTES = 64 * 1024;
 
-    public function __construct(private PaystackClient $paystack) {}
+    public function __construct(private PaystackClient $paystackClient) {}
 
     public function handle(
         #[SensitiveParameter] string $rawBody,
@@ -24,12 +24,12 @@ final readonly class VerifyPaystackWebhookSignature
             throw new WebhookPayloadTooLargeException;
         }
 
-        if (! $this->paystack->hasValidTestSecretKey()) {
+        if (! $this->paystackClient->hasValidTestSecretKey()) {
             throw new WebhookVerificationUnavailableException;
         }
 
         if ($signature === null
-            || ! $this->paystack->matchesWebhookSignature($rawBody, $signature)) {
+            || ! $this->paystackClient->signatureMatchesBody($rawBody, $signature)) {
             throw new InvalidWebhookSignatureException;
         }
     }

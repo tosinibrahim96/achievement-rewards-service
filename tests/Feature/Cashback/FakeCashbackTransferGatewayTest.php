@@ -14,6 +14,7 @@ use App\Infrastructure\Payments\FakeTransferEffectRegistry;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use LogicException;
+use RuntimeException;
 
 /** @return array{FakeTransferEffectRegistry, CashbackTransferRequest} */
 function fakeTransferFixture(): array
@@ -46,6 +47,7 @@ it('atomically creates one non-expiring fake success effect with a deterministic
         expect($gateway->provider())->toBe(PaymentProvider::Fake)
             ->and($first->status)->toBe(PayoutAttemptStatus::Succeeded)
             ->and($first->transferCode)->toBe('TRF_FAKE_'.hash('sha256', $request->providerReference))
+            ->and($first->latencyMs)->toBe(0)
             ->and($second->transferCode)->toBe($first->transferCode)
             ->and($ttl)->toBe(-1)
             ->and($gateway->verifyTransfer($request->providerReference)->result?->status)
@@ -54,6 +56,68 @@ it('atomically creates one non-expiring fake success effect with a deterministic
         $effects->forget($request->providerReference);
     }
 });
+
+it('accepts only safe Redis key parts for fake transfer effects', function (
+    string $environment,
+    string $namespace,
+    bool $isValid,
+): void {
+    if ($isValid) {
+        expect(new FakeTransferEffectRegistry($environment, $namespace))
+            ->toBeInstanceOf(FakeTransferEffectRegistry::class);
+
+        return;
+    }
+
+    expect(fn () => new FakeTransferEffectRegistry($environment, $namespace))
+        ->toThrow(LogicException::class);
+})->with([
+    'letters numbers dot underscore and hyphen' => ['testing', 'pest_1.2-test', true],
+    'empty environment' => ['', 'safe', false],
+    'space' => ['test environment', 'safe', false],
+    'colon would add a key segment' => ['testing', 'unsafe:segment', false],
+    'slash' => ['testing', 'unsafe/segment', false],
+    'line break' => ['testing', "unsafe\nsegment", false],
+]);
+
+it('rejects stored fake effects with a missing version, unknown version, invalid status, or empty code', function (
+    array $storedRecord,
+): void {
+    [$effects, $request] = fakeTransferFixture();
+    $key = $effects->keyForReference($request->providerReference);
+
+    Redis::connection('default')->command('set', [
+        $key,
+        json_encode($storedRecord, JSON_THROW_ON_ERROR),
+    ]);
+
+    try {
+        expect(fn () => $effects->findByReference($request->providerReference))
+            ->toThrow(RuntimeException::class, 'invalid stored representation');
+    } finally {
+        $effects->forget($request->providerReference);
+    }
+})->with([
+    'missing version' => [[
+        'status' => 'succeeded',
+        'transfer_code' => 'TRF_FAKE_STORED',
+    ]],
+    'unknown version' => [[
+        'version' => 2,
+        'status' => 'succeeded',
+        'transfer_code' => 'TRF_FAKE_STORED',
+    ]],
+    'invalid status' => [[
+        'version' => 1,
+        'status' => 'failed',
+        'transfer_code' => 'TRF_FAKE_STORED',
+    ]],
+    'empty transfer code' => [[
+        'version' => 1,
+        'status' => 'succeeded',
+        'transfer_code' => '',
+    ]],
+]);
 
 it('persists a pending provider-created effect and verifies the same lifecycle', function (): void {
     [$effects, $request] = fakeTransferFixture();

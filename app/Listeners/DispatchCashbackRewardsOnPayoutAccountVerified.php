@@ -10,7 +10,9 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 
 final class DispatchCashbackRewardsOnPayoutAccountVerified implements ShouldQueue
 {
-    public int $tries = 10;
+    private const int MAX_ATTEMPTS = 10;
+
+    public int $tries = self::MAX_ATTEMPTS;
 
     public function __construct(
         private readonly DispatchActionableCashbackRewards $dispatchActionableCashbackRewards,
