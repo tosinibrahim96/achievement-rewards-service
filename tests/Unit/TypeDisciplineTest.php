@@ -9,18 +9,24 @@ use App\Actions\Badges\UnlockBadge;
 use App\Actions\Cashback\CreateCashbackReward;
 use App\Actions\Cashback\DispatchActionableCashbackRewards;
 use App\Actions\Cashback\EnqueueCashbackPayment;
+use App\Actions\Cashback\HandlePaystackWebhook;
 use App\Actions\Cashback\ListCashbackRewards;
 use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\RequestCashbackPayoutSupport;
+use App\Actions\Cashback\VerifyPaystackWebhookSignature;
 use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Actions\Purchases\RecordPurchase;
 use App\Contracts\Achievements\AchievementProgressCalculator;
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Contracts\Payments\TransferRecipientGateway;
 use App\Data\Cashback\CashbackPaymentClaim;
+use App\Data\Cashback\CashbackPayoutSupportRequest;
+use App\Data\Cashback\RecordedPaystackWebhook;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
 use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\CreatedTransferRecipient;
+use App\Data\Payments\PaystackTransferCallback;
 use App\Data\Payments\TransferBalance;
 use App\Data\Payouts\PayoutAccountRegistrationResult;
 use App\Data\Payouts\RegisterPayoutAccountInput;
@@ -44,6 +50,7 @@ use App\Models\Badge;
 use App\Models\CashbackReward;
 use App\Models\PayoutAccount;
 use App\Models\PayoutAttempt;
+use App\Models\ProviderWebhookReceipt;
 use App\Models\Purchase;
 use App\Models\User;
 use App\Models\UserAchievement;
@@ -67,7 +74,10 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         DispatchActionableCashbackRewards::class,
         EnqueueCashbackPayment::class,
         ListCashbackRewards::class,
+        HandlePaystackWebhook::class,
         ProcessCashbackPayment::class,
+        RequestCashbackPayoutSupport::class,
+        VerifyPaystackWebhookSignature::class,
         RegisterPayoutAccount::class,
         RegisterPayoutAccountInput::class,
         PayoutAccountRegistrationResult::class,
@@ -77,6 +87,9 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         CashbackTransferResult::class,
         CashbackTransferVerification::class,
         CashbackPaymentClaim::class,
+        CashbackPayoutSupportRequest::class,
+        RecordedPaystackWebhook::class,
+        PaystackTransferCallback::class,
         FakeCashbackTransferGateway::class,
         FakeTransferEffectRegistry::class,
         FakeTransferRecipientGateway::class,
@@ -105,6 +118,7 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         CashbackReward::class,
         PayoutAccount::class,
         PayoutAttempt::class,
+        ProviderWebhookReceipt::class,
     ];
 
     foreach ($mutableModels as $class) {
