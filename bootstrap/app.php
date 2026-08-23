@@ -22,6 +22,8 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->prepend(AssignRequestId::class);
+        // There is no browser login route, so return an auth error instead of redirecting guests.
+        $middleware->redirectGuestsTo(null);
         $middleware->alias([
             'abilities' => CheckAbilities::class,
             'customer-account' => EnsureCustomerAccount::class,
@@ -29,14 +31,14 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        $exceptions->shouldRenderJsonWhen(
-            fn (Request $request) => $request->is('api/*') || $request->expectsJson(),
-        );
+        $shouldRenderJson = static fn (Request $request): bool => $request->is('api/*')
+            || $request->routeIs('users.achievements.show')
+            || $request->expectsJson();
 
-        $exceptions->respond(function (Response $response, Throwable $exception, Request $request): Response {
-            $isApiRequest = $request->is('api/*') || $request->expectsJson();
+        $exceptions->shouldRenderJsonWhen($shouldRenderJson);
 
-            if (! $isApiRequest) {
+        $exceptions->respond(function (Response $response, Throwable $exception, Request $request) use ($shouldRenderJson): Response {
+            if (! $shouldRenderJson($request)) {
                 return $response;
             }
 
