@@ -9,5 +9,7 @@ use RuntimeException;
 
 final class InvalidCredentialsException extends RuntimeException implements ShouldntReport
 {
-    // Invalid login attempts are expected client errors, not reportable server failures.
+    /*
+     * Invalid login attempts are expected client errors, not reportable server failures.
+     */
 }

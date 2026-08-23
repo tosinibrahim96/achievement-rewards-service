@@ -97,7 +97,8 @@ it('releases overlapping queue work for a retry using the shared redis lock', fu
     $listener = app(EvaluatePurchaseAchievementsListener::class);
     $middleware = $listener->middleware($event)[0];
 
-    expect($middleware)->toBeInstanceOf(WithoutOverlapping::class)
+    expect($listener->tries)->toBe(10)
+        ->and($middleware)->toBeInstanceOf(WithoutOverlapping::class)
         ->and($middleware->releaseAfter)->toBe(1)
         ->and($middleware->expiresAfter)->toBe(60)
         ->and($middleware->getLockKey(new stdClass))->toBe("achievement-progression:user:{$user->id}");

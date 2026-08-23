@@ -240,6 +240,7 @@ it('discovers a queued per-user badge listener with its own progression lock', f
     $middleware = $listener->middleware(new AchievementUnlocked('First Purchase', $user))[0];
 
     expect($listener)->toBeInstanceOf(EvaluateBadgesListener::class)
+        ->and($listener->tries)->toBe(10)
         ->and($middleware)->toBeInstanceOf(WithoutOverlapping::class)
         ->and($middleware->releaseAfter)->toBe(1)
         ->and($middleware->expiresAfter)->toBe(60)

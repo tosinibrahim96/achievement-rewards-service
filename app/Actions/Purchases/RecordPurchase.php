@@ -99,7 +99,10 @@ final readonly class RecordPurchase
         try {
             report($exception);
         } catch (Throwable) {
-            // The purchase is already committed; a reporting failure must not change the result.
+            /*
+             * The purchase is already committed. A reporting failure must not
+             * change the result returned by the business workflow.
+             */
         }
     }
 }

@@ -11,7 +11,13 @@ use Illuminate\Queue\Middleware\WithoutOverlapping;
 
 final class EvaluateBadgesListener implements ShouldQueue
 {
-    public int $tries = 10;
+    private const int MAX_ATTEMPTS = 10;
+
+    private const int LOCK_RETRY_DELAY_SECONDS = 1;
+
+    private const int LOCK_LEASE_SECONDS = 60;
+
+    public int $tries = self::MAX_ATTEMPTS;
 
     public function __construct(
         private readonly EvaluateBadges $evaluateBadges,
@@ -25,12 +31,17 @@ final class EvaluateBadgesListener implements ShouldQueue
     /** @return list<WithoutOverlapping> */
     public function middleware(AchievementUnlocked $event): array
     {
+        /*
+         * Badge evaluation for one user does not overlap. A collision is retried
+         * after one second, while the lease bounds a lock left behind by a stopped
+         * worker. This lock does not guarantee queue order.
+         */
         return [
             (new WithoutOverlapping("user:{$event->user->id}"))
                 ->shared()
                 ->withPrefix('badge-progression:')
-                ->releaseAfter(1)
-                ->expireAfter(60),
+                ->releaseAfter(self::LOCK_RETRY_DELAY_SECONDS)
+                ->expireAfter(self::LOCK_LEASE_SECONDS),
         ];
     }
 }

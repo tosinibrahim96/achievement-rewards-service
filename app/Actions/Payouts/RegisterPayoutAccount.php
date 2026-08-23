@@ -29,10 +29,18 @@ final readonly class RegisterPayoutAccount
 {
     private const RECIPIENT_UNIQUE_CONSTRAINT = 'payout_accounts_provider_recipient_unique';
 
+    private const int DRIVER_ERROR_MESSAGE_INDEX = 2;
+
+    private const int DEFAULT_LOCK_LEASE_SECONDS = 60;
+
+    private const int DEFAULT_LOCK_WAIT_SECONDS = 5;
+
     public function __construct(
         private PaymentProviderRegistry $paymentProviders,
-        #[Config('payments.payout_account_lock.seconds', 60)] private int $lockSeconds,
-        #[Config('payments.payout_account_lock.wait_seconds', 5)] private int $lockWaitSeconds,
+        #[Config('payments.payout_account_lock.seconds', self::DEFAULT_LOCK_LEASE_SECONDS)]
+        private int $lockLeaseSeconds,
+        #[Config('payments.payout_account_lock.wait_seconds', self::DEFAULT_LOCK_WAIT_SECONDS)]
+        private int $lockWaitSeconds,
     ) {}
 
     public function handle(
@@ -47,13 +55,18 @@ final readonly class RegisterPayoutAccount
             throw new LogicException('Payout account registration cannot run inside an existing database transaction.');
         }
 
-        $lock = Cache::lock("payout-account:user:{$user->id}", $this->lockSeconds);
+        /*
+         * This per-user lock covers the provider call and local replacement so
+         * two requests cannot create competing recipients for the same customer.
+         * A database transaction alone cannot lock or roll back provider work.
+         */
+        $lock = Cache::lock("payout-account:user:{$user->id}", $this->lockLeaseSeconds);
 
         try {
             /** @var PayoutAccountRegistrationResult $registration */
             $registration = $lock->block(
                 $this->lockWaitSeconds,
-                fn (): PayoutAccountRegistrationResult => $this->registerWhileLocked($user, $input),
+                fn (): PayoutAccountRegistrationResult => $this->createAndSaveAccount($user, $input),
             );
         } catch (LockTimeoutException $exception) {
             throw new PayoutAccountBusyException(previous: $exception);
@@ -64,23 +77,27 @@ final readonly class RegisterPayoutAccount
         return $registration;
     }
 
-    private function registerWhileLocked(
+    private function createAndSaveAccount(
         User $user,
         #[SensitiveParameter] RegisterPayoutAccountInput $input,
     ): PayoutAccountRegistrationResult {
-        $recipient = $this->paymentProviders
+        $createdRecipient = $this->paymentProviders
             ->defaultRecipientGateway()
             ->createRecipient($input);
 
-        return $this->persistRecipient($user, $recipient);
+        return $this->saveAccount($user, $createdRecipient);
     }
 
-    private function persistRecipient(
+    private function saveAccount(
         User $user,
-        CreatedTransferRecipient $recipient,
+        CreatedTransferRecipient $createdRecipient,
     ): PayoutAccountRegistrationResult {
         try {
-            return DB::transaction(function () use ($user, $recipient): PayoutAccountRegistrationResult {
+            return DB::transaction(function () use ($user, $createdRecipient): PayoutAccountRegistrationResult {
+                /*
+                 * The user row is the lock anchor when no payout-account row exists.
+                 * PayoutAccountVerified waits for this transaction to commit.
+                 */
                 User::query()
                     ->whereKey($user->id)
                     ->where('account_type', AccountType::Customer)
@@ -95,13 +112,13 @@ final readonly class RegisterPayoutAccount
                 $payoutAccount ??= new PayoutAccount(['user_id' => $user->id]);
 
                 $payoutAccount->fill([
-                    'provider' => $recipient->provider,
-                    'provider_recipient_code' => $recipient->recipientCode,
-                    'bank_code' => $recipient->bankCode,
-                    'bank_name' => $recipient->bankName,
-                    'account_name' => $recipient->accountName,
-                    'account_last_four' => $recipient->accountLastFour,
-                    'currency' => $recipient->currency,
+                    'provider' => $createdRecipient->provider,
+                    'provider_recipient_code' => $createdRecipient->recipientCode,
+                    'bank_code' => $createdRecipient->bankCode,
+                    'bank_name' => $createdRecipient->bankName,
+                    'account_name' => $createdRecipient->accountName,
+                    'account_last_four' => $createdRecipient->accountLastFour,
+                    'currency' => $createdRecipient->currency,
                     'verified_at' => now(),
                 ])->save();
 
@@ -110,15 +127,24 @@ final readonly class RegisterPayoutAccount
                 return new PayoutAccountRegistrationResult($payoutAccount, $wasCreated);
             });
         } catch (UniqueConstraintViolationException $exception) {
-            $databaseMessage = $exception->errorInfo[2] ?? '';
-
-            if (! is_string($databaseMessage)
-                || ! str_contains($databaseMessage, self::RECIPIENT_UNIQUE_CONSTRAINT)) {
+            if (! $this->isRecipientCodeConflict($exception)) {
                 throw $exception;
             }
 
             throw new PayoutAccountConflictException(previous: $exception);
         }
+    }
+
+    private function isRecipientCodeConflict(UniqueConstraintViolationException $exception): bool
+    {
+        /*
+         * PDO errorInfo uses index 0 for SQLSTATE, 1 for the driver code, and
+         * 2 for the driver message that contains PostgreSQL's constraint name.
+         */
+        $driverMessage = $exception->errorInfo[self::DRIVER_ERROR_MESSAGE_INDEX] ?? null;
+
+        return is_string($driverMessage)
+            && str_contains($driverMessage, self::RECIPIENT_UNIQUE_CONSTRAINT);
     }
 
     private function logSavedAccount(PayoutAccountRegistrationResult $registration): void
@@ -142,7 +168,10 @@ final readonly class RegisterPayoutAccount
         try {
             report($exception);
         } catch (Throwable) {
-            // The account is already committed; a reporting failure must not change the result.
+            /*
+             * The account is already committed. A reporting failure must not
+             * change the successful registration returned to the customer.
+             */
         }
     }
 }

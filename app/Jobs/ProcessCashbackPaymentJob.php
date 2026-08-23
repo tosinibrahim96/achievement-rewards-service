@@ -14,9 +14,19 @@ final class ProcessCashbackPaymentJob implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
-    public int $timeout = 30;
+    private const int PROCESS_TIMEOUT_SECONDS = 30;
 
-    public int $uniqueFor = 300;
+    private const int UNIQUE_LOCK_SECONDS = 300;
+
+    private const int OVERLAP_LOCK_SECONDS = 60;
+
+    /*
+     * Queue uniqueness reduces duplicate dispatches; the database claim remains
+     * the correctness guard. The overlap lease outlives the worker timeout.
+     */
+    public int $timeout = self::PROCESS_TIMEOUT_SECONDS;
+
+    public int $uniqueFor = self::UNIQUE_LOCK_SECONDS;
 
     public function __construct(public int $cashbackRewardId) {}
 
@@ -33,12 +43,17 @@ final class ProcessCashbackPaymentJob implements ShouldBeUnique, ShouldQueue
     /** @return list<WithoutOverlapping> */
     public function middleware(): array
     {
+        /*
+         * A duplicate that reaches this busy reward is deleted instead of retried.
+         * Normally the lock holder is already processing the same durable reward;
+         * the database claim remains the final guard against duplicate provider work.
+         */
         return [
             (new WithoutOverlapping("reward:{$this->cashbackRewardId}"))
                 ->shared()
                 ->withPrefix('cashback-payment:')
                 ->dontRelease()
-                ->expireAfter(60),
+                ->expireAfter(self::OVERLAP_LOCK_SECONDS),
         ];
     }
 }
