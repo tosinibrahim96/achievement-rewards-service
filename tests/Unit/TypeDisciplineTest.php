@@ -7,11 +7,21 @@ use App\Actions\Achievements\UnlockAchievement;
 use App\Actions\Badges\EvaluateBadges;
 use App\Actions\Badges\UnlockBadge;
 use App\Actions\Cashback\CreateCashbackReward;
+use App\Actions\Cashback\DispatchActionableCashbackRewards;
+use App\Actions\Cashback\DispatchCashbackPaymentJob;
+use App\Actions\Cashback\ListCashbackRewards;
+use App\Actions\Cashback\ProcessCashbackPayment;
 use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Actions\Purchases\RecordPurchase;
 use App\Contracts\Achievements\AchievementProgressCalculator;
+use App\Contracts\Payments\CashbackTransferGateway;
 use App\Contracts\Payments\TransferRecipientGateway;
+use App\Data\Cashback\CashbackPaymentClaim;
+use App\Data\Payments\CashbackTransferRequest;
+use App\Data\Payments\CashbackTransferResult;
+use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\CreatedTransferRecipient;
+use App\Data\Payments\TransferBalance;
 use App\Data\Payouts\PayoutAccountRegistrationResult;
 use App\Data\Payouts\RegisterPayoutAccountInput;
 use App\Data\Purchases\RecordPurchaseInput;
@@ -20,6 +30,8 @@ use App\Domain\Achievements\AchievementProgressRegistry;
 use App\Domain\Achievements\LifetimeSpendProgressCalculator;
 use App\Domain\Achievements\PurchaseCountProgressCalculator;
 use App\Domain\Money\Money;
+use App\Infrastructure\Payments\FakeCashbackTransferGateway;
+use App\Infrastructure\Payments\FakeTransferEffectRegistry;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
 use App\Models\Achievement;
@@ -27,6 +39,7 @@ use App\Models\AchievementGroup;
 use App\Models\Badge;
 use App\Models\CashbackReward;
 use App\Models\PayoutAccount;
+use App\Models\PayoutAttempt;
 use App\Models\Purchase;
 use App\Models\User;
 use App\Models\UserAchievement;
@@ -47,10 +60,21 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         EvaluateBadges::class,
         UnlockBadge::class,
         CreateCashbackReward::class,
+        DispatchActionableCashbackRewards::class,
+        DispatchCashbackPaymentJob::class,
+        ListCashbackRewards::class,
+        ProcessCashbackPayment::class,
         RegisterPayoutAccount::class,
         RegisterPayoutAccountInput::class,
         PayoutAccountRegistrationResult::class,
         CreatedTransferRecipient::class,
+        TransferBalance::class,
+        CashbackTransferRequest::class,
+        CashbackTransferResult::class,
+        CashbackTransferVerification::class,
+        CashbackPaymentClaim::class,
+        FakeCashbackTransferGateway::class,
+        FakeTransferEffectRegistry::class,
         FakeTransferRecipientGateway::class,
         PaymentProviderRegistry::class,
     ];
@@ -72,6 +96,7 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         UserBadge::class,
         CashbackReward::class,
         PayoutAccount::class,
+        PayoutAttempt::class,
     ];
 
     foreach ($mutableModels as $class) {
@@ -80,4 +105,5 @@ it('uses final readonly classes for leaf values and stateless actions without fr
 
     expect((new ReflectionClass(AchievementProgressCalculator::class))->isInterface())->toBeTrue();
     expect((new ReflectionClass(TransferRecipientGateway::class))->isInterface())->toBeTrue();
+    expect((new ReflectionClass(CashbackTransferGateway::class))->isInterface())->toBeTrue();
 });
