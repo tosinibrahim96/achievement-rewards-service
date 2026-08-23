@@ -8,6 +8,10 @@ use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Data\Auth\LoginCustomerInput;
 use App\Data\Auth\RegisterCustomerInput;
 use App\Data\Payouts\RegisterPayoutAccountInput;
+use App\Infrastructure\Payments\PaystackCashbackTransferGateway;
+use App\Infrastructure\Payments\PaystackClient;
+use App\Infrastructure\Payments\PaystackResponse;
+use App\Infrastructure\Payments\PaystackTransferRecipientGateway;
 
 it('marks credential-bearing Action inputs as sensitive', function (string $action): void {
     $parameter = (new ReflectionMethod($action, 'handle'))->getParameters()[0];
@@ -47,4 +51,41 @@ it('marks the full account number as sensitive while constructing payout input',
 
     expect($accountNumber)->toBeInstanceOf(ReflectionParameter::class)
         ->and($accountNumber->getAttributes(SensitiveParameter::class))->toHaveCount(1);
+});
+
+it('marks the configured Paystack secret at the infrastructure constructor boundary', function (): void {
+    $constructor = (new ReflectionClass(PaystackClient::class))->getConstructor();
+    $secretKey = collect($constructor?->getParameters() ?? [])
+        ->firstWhere(fn (ReflectionParameter $parameter): bool => $parameter->getName() === 'secretKey');
+
+    expect($secretKey)->toBeInstanceOf(ReflectionParameter::class)
+        ->and($secretKey->getAttributes(SensitiveParameter::class))->toHaveCount(1);
+});
+
+it('marks Paystack account data and provider envelopes at every fallible infrastructure boundary', function (): void {
+    $boundaries = [
+        [PaystackTransferRecipientGateway::class, 'createRecipient', 'input'],
+        [PaystackTransferRecipientGateway::class, 'successfulData', 'response'],
+        [PaystackTransferRecipientGateway::class, 'throwFailure', 'response'],
+        [PaystackTransferRecipientGateway::class, 'requiredString', 'values'],
+        [PaystackClient::class, 'get', 'query'],
+        [PaystackClient::class, 'post', 'payload'],
+        [PaystackClient::class, 'send', 'options'],
+        [PaystackClient::class, 'decode', 'response'],
+        [PaystackResponse::class, '__construct', 'payload'],
+        [PaystackCashbackTransferGateway::class, 'mapCreatedTransfer', 'response'],
+        [PaystackCashbackTransferGateway::class, 'hasValidTransferFacts', 'data'],
+        [PaystackCashbackTransferGateway::class, 'mapRejectedTransfer', 'response'],
+        [PaystackCashbackTransferGateway::class, 'ambiguousResponse', 'response'],
+        [PaystackCashbackTransferGateway::class, 'isTransferNotFound', 'response'],
+        [PaystackCashbackTransferGateway::class, 'transferCodeFrom', 'response'],
+    ];
+
+    foreach ($boundaries as [$class, $method, $parameterName]) {
+        $parameter = collect((new ReflectionMethod($class, $method))->getParameters())
+            ->firstWhere(fn (ReflectionParameter $candidate): bool => $candidate->getName() === $parameterName);
+
+        expect($parameter)->toBeInstanceOf(ReflectionParameter::class)
+            ->and($parameter->getAttributes(SensitiveParameter::class))->toHaveCount(1);
+    }
 });

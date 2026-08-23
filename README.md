@@ -2,7 +2,7 @@
 
 A Laravel service for ecommerce achievements, badges, and cashback rewards.
 
-The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback rewards, verified/masked payout-account onboarding, fake-backed payout execution, and customer cashback visibility. The real Paystack adapter, payout reliability/recovery, and the customer achievement endpoint remain later milestones.
+The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, durable cashback rewards, verified/masked payout-account onboarding, deterministic fake-backed payout execution, a Paystack test-mode adapter, and customer cashback visibility. Payout reliability/recovery and the customer achievement endpoint remain later milestones.
 
 ## Prerequisite
 
@@ -174,9 +174,46 @@ FAKE_PAYOUT_ACCOUNT_SCENARIO=success
 FAKE_TRANSFER_SCENARIO=success
 ```
 
-Supported payout-account fake scenarios are `success` and `rejected`. The fake derives a deterministic internal recipient identity without storing the full account number. Setting `PAYMENT_DRIVER=paystack` before the later Paystack adapter exists fails safely; it never falls back to fake or reinterprets an existing stored account. Changing the default alone changes no persisted destination—only a successful replacement stores a new provider.
+Supported payout-account fake scenarios are `success` and `rejected`. The fake derives a deterministic internal recipient identity without storing the full account number. Both fake and Paystack adapters remain registered. `PAYMENT_DRIVER` selects only the adapter used for a new or replacement payout-account operation; changing the default never reinterprets an existing account or claimed reward. A failed Paystack operation leaves the existing verified destination unchanged and never falls back to fake.
 
 Expected recipient rejection returns sanitized `422 payout_account_rejected`. A recipient identity already owned by another customer returns sanitized `409 payout_account_conflict`, and lock contention returns `409 payout_account_busy`. Provider unavailability, malformed responses, and timeouts map centrally to sanitized `503 payment_provider_unavailable`, `502 payment_provider_invalid_response`, and `504 payment_provider_timeout`. Exceeding the per-customer limit returns the standard `429 rate_limit_exceeded` response. Provider text, account details, secrets, and raw payloads are not copied into these responses.
+
+### Paystack test-mode adapter
+
+The real adapter is deliberately restricted to Paystack test mode. Keep the fake as the default for local demonstrations and automated tests. To select Paystack for a manual sandbox operation, set these only in the local, Git-ignored `.env` file:
+
+```dotenv
+PAYMENT_DRIVER=paystack
+PAYSTACK_SECRET_KEY=<Paystack test secret>
+PAYSTACK_BASE_URL=https://api.paystack.co
+```
+
+Only a secret whose prefix identifies a test key is accepted; a missing, public, whitespace-padded, or live key fails before network I/O. Never commit or paste a real secret into documentation, fixtures, logs, screenshots, or issue text. Long-lived Horizon workers must be restarted after changing driver or credential configuration:
+
+```bash
+docker compose restart horizon
+```
+
+Paystack payout-account onboarding keeps the application contract provider-neutral. Internally, the adapter calls `GET /bank/resolve` with the string account number and bank code, uses the returned canonical name in `POST /transferrecipient`, and returns only the recipient code plus masked bank metadata. The full account number and provider payload are discarded rather than persisted.
+
+Cashback transfers use `POST /transfer` with source `balance`, the snapshotted amount and recipient, and the reward's existing stable reference. Paystack's test guide documents immediate `success`, while the general OTP-disabled API flow may return `pending`; the adapter maps the actual `data.status` instead of inferring payment from HTTP `200` or response text. A timeout, malformed response, contradictory envelope, or unknown provider state stays ambiguous and is not automatically re-posted. `GET /balance` and `GET /transfer/verify/{reference}` are available through the adapter for readiness and later reconciliation, but a balance read is advisory rather than a reservation.
+
+The default and CI path remains credential-free: `phpunit.xml` pins the fake driver, Paystack's official API base URL, and a blank Paystack key, while Laravel HTTP fakes prove the exact Paystack URLs, Bearer header, JSON/query payloads, configured timeout options, synthetic timeout classifications, response mappings, and one-request behavior without contacting Paystack. Paystack test versus live mode is selected by the credential, not by a different base URL.
+
+#### Optional sandbox smoke test
+
+This check is optional and never gates CI or the required reviewer flow. Immediately before running it:
+
+1. Confirm the Paystack Dashboard is in test mode and that the secret belongs to that same integration.
+2. Recheck that **Confirm transfers before sending** is unchecked; this is mutable Dashboard state, not an application guarantee.
+3. Read the available NGN balance through the Dashboard or `GET /balance`. Ensure it can cover NGN 300 plus Paystack's applicable fee.
+4. If needed, prepare test funds outside this service with the Dashboard's test top-up flow or a manually initialized test checkout, verify that test transaction, and read the balance again. Do not add customer collection or automatic funding to this service.
+5. Put the test key in local `.env`, select `PAYMENT_DRIVER=paystack`, restart Horizon, and create or replace the customer's destination through `PUT /api/me/payout-account`. Paystack documents Zenith Bank, account `0000000000`, bank code `057`, and NGN for its Nigerian test recipient.
+6. Trigger the normal fixed NGN 300 reward flow. Accept the actual `success` or `pending` result and verify the same stored reference; never generate a second reference to make the smoke test pass.
+7. If Paystack returns raw `otp`, stop. The service records `otp_required`/`requires_attention` and intentionally calls none of the finalize, resend, enable-OTP, or disable-OTP endpoints. Correct the Dashboard setting before another separately reviewed attempt.
+8. Restore `PAYMENT_DRIVER=fake` after the smoke test and restart Horizon.
+
+Disabling per-transfer confirmation increases the impact of a stolen secret because a test transfer no longer pauses for human approval. Backend-only test keys, redacted exception boundaries, and the fake default are therefore part of the safety model. Paystack URL-based Transfers Approval may be useful production hardening, but live activation, real money, that approval protocol, webhooks, automatic retries, and reconciliation are outside this phase.
 
 ## Purchase-driven achievements
 
@@ -254,7 +291,7 @@ trusted POST
     -> queued wake-up listener discovers all actionable rewards for that user
     -> queue one unique job carrying only each cashback reward ID
     -> transactionally snapshot provider, destination, money, and reference in an attempt
-    -> call the fake transfer gateway after the claim transaction commits
+    -> call the snapshotted fake or Paystack transfer gateway after the claim transaction commits
     -> conditionally persist the factual attempt result and customer-visible reward state
 ```
 
@@ -269,13 +306,13 @@ BadgeUnlocked(badge_name: string, user: User)
 
 Both events implement after-commit dispatch. A transaction rollback therefore removes the new history/reward rows and emits no event. Existing unlocks return as idempotent no-ops and do not emit a duplicate event.
 
-### Durable cashback entitlement and fake payout execution
+### Durable cashback entitlement and payout execution
 
 `cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. New rewards start in `awaiting_payout_account`; badge and verified-account wake-ups now discover when they are actionable.
 
 Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: their queued listeners re-query all unattempted rewards that the event user can now receive and dispatch one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks and claims the reward, copies the current verified account's provider and destination into a durable `payout_attempts` snapshot, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
 
-The provider and destination become sticky on first claim. Changing `PAYMENT_DRIVER`, replacing the customer's account, or changing the fake scenario later cannot redirect an existing attempt. The reward's stable reference is reused; the fake stores accepted effects atomically in Redis so duplicate workers observe one process-visible transfer identity. Queue uniqueness and overlap locks reduce repeated work, while the PostgreSQL claim and attempt uniqueness are the durable defenses.
+The provider and destination become sticky on first claim. Changing `PAYMENT_DRIVER`, replacing the customer's account, or changing the fake scenario later cannot redirect an existing attempt. The reward's stable reference is reused by both providers; the fake stores accepted effects atomically in Redis, while Paystack receives the same reference for initiation and verification. Queue uniqueness and overlap locks reduce repeated work, while the PostgreSQL claim and attempt uniqueness are the durable defenses.
 
 The four server-controlled fake transfer scenarios map as follows:
 
@@ -345,7 +382,7 @@ The route requires `cashback-rewards:read` and a customer identity. It returns a
 
 Provider ownership, stable references, recipient codes, attempt rows, balance observations, and diagnostics are intentionally absent from this customer response.
 
-Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, cashback clawbacks, real-provider HTTP, and automatic payout recovery are not part of this milestone.
+Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, cashback clawbacks, Paystack webhooks, and automatic payout recovery are not part of this milestone.
 
 ## Daily operation
 
@@ -409,6 +446,8 @@ docker compose run --rm app composer quality
 ```
 
 `composer quality` validates `composer.json`, checks formatting, runs Larastan at level 10, enforces the 90% line-coverage floor, and audits locked dependencies.
+
+The automated suite never needs a Paystack account, credential, funded balance, or network connection. Paystack contract coverage uses `Http::fake()`; the optional credentialed sandbox procedure above is separate manual evidence.
 
 Use the mutating formatter only when intentionally fixing style:
 
@@ -474,5 +513,6 @@ Run the first-time setup commands again afterward.
 - The credentials in `.env.example` are local-development defaults only.
 - Production secrets must be injected by the deployment environment.
 - Full payout account numbers are accepted only over the protected request boundary for recipient creation and are never persisted or returned.
+- Paystack integration accepts test keys only; the fake remains the default and no live-money path is supported.
 - The production image runs application processes as the unprivileged `app` user.
 - Horizon is available locally and denied by default in non-local environments until an explicit authorization rule is added with authentication.

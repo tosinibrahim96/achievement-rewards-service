@@ -15,7 +15,7 @@ final readonly class DispatchActionableCashbackRewards
     public const DEFAULT_CHUNK_SIZE = 100;
 
     public function __construct(
-        private DispatchCashbackPaymentJob $dispatchCashbackPaymentJob,
+        private EnqueueCashbackPayment $enqueueCashbackPayment,
     ) {}
 
     public function dispatchForUser(
@@ -51,13 +51,13 @@ final readonly class DispatchActionableCashbackRewards
             $query->where('cashback_rewards.user_id', $userId);
         }
 
-        $dispatchCashbackPaymentJob = $this->dispatchCashbackPaymentJob;
+        $enqueueCashbackPayment = $this->enqueueCashbackPayment;
 
         $query->chunkById(
             $chunkSize,
-            static function (Collection $rewards) use (&$candidates, $dispatchCashbackPaymentJob): void {
+            static function (Collection $rewards) use (&$candidates, $enqueueCashbackPayment): void {
                 foreach ($rewards as $reward) {
-                    $dispatchCashbackPaymentJob->handle($reward->id);
+                    $enqueueCashbackPayment->handle($reward->id);
                     $candidates++;
                 }
             },
