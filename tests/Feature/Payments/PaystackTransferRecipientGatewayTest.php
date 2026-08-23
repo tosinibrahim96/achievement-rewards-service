@@ -138,14 +138,15 @@ it('persists only the safe Paystack recipient through the provider-neutral Actio
     Event::assertDispatched(PayoutAccountVerified::class);
 });
 
-it('keeps the credential-free fake default resolvable while the Paystack recipient adapter is registered', function (): void {
+it('keeps the credential-free fake default resolvable while both Paystack adapters are registered', function (): void {
     config()->set('payments.default', PaymentProvider::Fake->value);
     config()->set('payments.paystack.secret_key');
 
     $registry = app(PaymentProviderRegistry::class);
 
     expect($registry->defaultRecipientGateway()->provider())->toBe(PaymentProvider::Fake)
-        ->and($registry->recipientGatewayFor(PaymentProvider::Paystack)->provider())->toBe(PaymentProvider::Paystack);
+        ->and($registry->recipientGatewayFor(PaymentProvider::Paystack)->provider())->toBe(PaymentProvider::Paystack)
+        ->and($registry->transferGatewayFor(PaymentProvider::Paystack)->provider())->toBe(PaymentProvider::Paystack);
     Http::assertNothingSent();
 });
 

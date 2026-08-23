@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Data\Payments;
 
+use App\Enums\CashbackTransferErrorCode;
 use App\Enums\PayoutAttemptStatus;
 use InvalidArgumentException;
 
@@ -13,13 +14,13 @@ final readonly class CashbackTransferResult
         public PayoutAttemptStatus $status,
         public ?string $transferCode = null,
         public ?int $httpStatus = null,
-        public ?string $errorCode = null,
+        public ?CashbackTransferErrorCode $errorCode = null,
         public ?string $errorMessage = null,
         public ?int $latencyMs = null,
         public ?int $observedBalanceMinor = null,
     ) {
-        if ($transferCode === '' || $errorCode === '' || $errorMessage === '') {
-            throw new InvalidArgumentException('Nullable transfer result strings must be non-empty when present.');
+        if ($transferCode === '' || $errorMessage === '') {
+            throw new InvalidArgumentException('Nullable transfer result text must be non-empty when present.');
         }
 
         if ($status === PayoutAttemptStatus::Started) {

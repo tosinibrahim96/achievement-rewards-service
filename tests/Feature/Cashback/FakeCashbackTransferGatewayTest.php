@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Data\Payments\CashbackTransferRequest;
+use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentProviderFailure;
@@ -74,6 +75,7 @@ it('does not consume the stable reference for pre-creation fake outcomes', funct
     string $scenario,
     PayoutAttemptStatus $expectedStatus,
     ?int $expectedBalance,
+    CashbackTransferErrorCode $expectedErrorCode,
 ): void {
     [$effects, $request] = fakeTransferFixture();
     $gateway = new FakeCashbackTransferGateway($effects, $scenario);
@@ -83,6 +85,7 @@ it('does not consume the stable reference for pre-creation fake outcomes', funct
 
         expect($result->status)->toBe($expectedStatus)
             ->and($result->transferCode)->toBeNull()
+            ->and($result->errorCode)->toBe($expectedErrorCode)
             ->and($result->observedBalanceMinor)->toBe($expectedBalance)
             ->and($gateway->verifyTransfer($request->providerReference)->result)->toBeNull()
             ->and(Redis::connection('default')->command('exists', [
@@ -96,11 +99,13 @@ it('does not consume the stable reference for pre-creation fake outcomes', funct
         'insufficient_funds',
         PayoutAttemptStatus::InsufficientFunds,
         0,
+        CashbackTransferErrorCode::InsufficientFunds,
     ],
     'permanent rejection' => [
         'permanent_failure',
         PayoutAttemptStatus::PermanentRejection,
         null,
+        CashbackTransferErrorCode::PermanentFailure,
     ],
 ]);
 

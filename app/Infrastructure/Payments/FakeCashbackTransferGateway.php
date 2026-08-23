@@ -9,6 +9,7 @@ use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
 use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
+use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PayoutAttemptStatus;
@@ -62,14 +63,14 @@ final readonly class FakeCashbackTransferGateway implements CashbackTransferGate
             'pending' => $this->effects->create($request, PayoutAttemptStatus::Pending),
             'insufficient_funds' => new CashbackTransferResult(
                 status: PayoutAttemptStatus::InsufficientFunds,
-                errorCode: 'insufficient_funds',
+                errorCode: CashbackTransferErrorCode::InsufficientFunds,
                 errorMessage: 'The fake provider balance is insufficient.',
                 latencyMs: 0,
                 observedBalanceMinor: 0,
             ),
             'permanent_failure' => new CashbackTransferResult(
                 status: PayoutAttemptStatus::PermanentRejection,
-                errorCode: 'permanent_failure',
+                errorCode: CashbackTransferErrorCode::PermanentFailure,
                 errorMessage: 'The fake provider rejected the transfer.',
                 latencyMs: 0,
             ),

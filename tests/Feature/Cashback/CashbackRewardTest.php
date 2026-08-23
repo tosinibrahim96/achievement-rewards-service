@@ -58,7 +58,12 @@ it('creates one snapshotted reward for every newly unlocked badge', function ():
             fn (CashbackReward $reward): bool => $reward->userBadge->correlation_id === $reward->correlation_id
                 && $reward->userBadge->user_id === $reward->user_id,
         ))->toBeTrue()
-        ->and($rewards->pluck('provider_reference')->unique())->toHaveCount(3);
+        ->and($rewards->pluck('provider_reference')->unique())->toHaveCount(3)
+        ->and($rewards->every(
+            fn (CashbackReward $reward): bool => strlen($reward->provider_reference) === 35
+                && preg_match('/\Acashback-[0-9a-hjkmnp-tv-z]{26}\z/', $reward->provider_reference) === 1
+                && preg_match('/\A[a-z0-9_-]{16,50}\z/', $reward->provider_reference) === 1,
+        ))->toBeTrue();
 });
 
 it('preserves existing reward snapshots when configuration changes', function (): void {
