@@ -10,6 +10,9 @@ use App\Exceptions\Payments\PaymentProviderException;
 use App\Exceptions\Payouts\PayoutAccountBusyException;
 use App\Exceptions\Payouts\PayoutAccountConflictException;
 use App\Exceptions\Purchases\PurchaseReferenceConflictException;
+use App\Exceptions\Webhooks\InvalidWebhookSignatureException;
+use App\Exceptions\Webhooks\WebhookPayloadTooLargeException;
+use App\Exceptions\Webhooks\WebhookVerificationUnavailableException;
 use App\Http\Middleware\AssignRequestId;
 use Illuminate\Auth\AuthenticationException;
 use Illuminate\Http\JsonResponse;
@@ -93,6 +96,30 @@ final readonly class ApiErrorResponseFactory
                 Response::HTTP_CONFLICT,
                 'The payout account conflicts with an existing destination.',
                 'payout_account_conflict',
+            ];
+        }
+
+        if ($exception instanceof InvalidWebhookSignatureException) {
+            return [
+                Response::HTTP_UNAUTHORIZED,
+                'The webhook signature is invalid.',
+                'invalid_webhook_signature',
+            ];
+        }
+
+        if ($exception instanceof WebhookPayloadTooLargeException) {
+            return [
+                Response::HTTP_REQUEST_ENTITY_TOO_LARGE,
+                'The webhook payload is too large.',
+                'webhook_payload_too_large',
+            ];
+        }
+
+        if ($exception instanceof WebhookVerificationUnavailableException) {
+            return [
+                Response::HTTP_SERVICE_UNAVAILABLE,
+                'Webhook verification is temporarily unavailable.',
+                'webhook_verification_unavailable',
             ];
         }
 
