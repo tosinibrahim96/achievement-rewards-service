@@ -34,6 +34,9 @@
         <env name="DB_PASSWORD" value="local_password"/>
         <env name="DB_URL" value=""/>
         <env name="MAIL_MAILER" value="array"/>
+        <env name="PAYMENT_DRIVER" value="fake" force="true"/>
+        <env name="PAYSTACK_BASE_URL" value="https://api.paystack.co" force="true"/>
+        <env name="PAYSTACK_SECRET_KEY" value="" force="true"/>
         <env name="QUEUE_CONNECTION" value="sync"/>
         <env name="SESSION_DRIVER" value="array"/>
         <env name="PULSE_ENABLED" value="false"/>
