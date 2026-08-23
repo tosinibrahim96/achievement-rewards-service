@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace App\Enums;
 
+/**
+ * The customer's overall cashback obligation, which may span payment attempts.
+ */
 enum CashbackRewardStatus: string
 {
     case AwaitingPayoutAccount = 'awaiting_payout_account';

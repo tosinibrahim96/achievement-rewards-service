@@ -10,7 +10,7 @@ enum PaystackTransferEvent: string
     case Failed = 'transfer.failed';
     case Reversed = 'transfer.reversed';
 
-    public function providerStatus(): string
+    public function transferStatus(): string
     {
         return match ($this) {
             self::Succeeded => 'success',
@@ -19,7 +19,7 @@ enum PaystackTransferEvent: string
         };
     }
 
-    public function attemptStatus(): PayoutAttemptStatus
+    public function newAttemptStatus(): PayoutAttemptStatus
     {
         return match ($this) {
             self::Succeeded => PayoutAttemptStatus::Succeeded,

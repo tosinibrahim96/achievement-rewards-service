@@ -30,6 +30,44 @@ beforeEach(function (): void {
     Http::preventStrayRequests();
 });
 
+it('accepts only test secret keys with a visible ASCII suffix', function (
+    string $secretKey,
+    bool $expected,
+): void {
+    expect(paystackClientForHttpTest($secretKey)->hasValidTestSecretKey())->toBe($expected);
+})->with([
+    'first visible suffix byte' => ['sk_test_!', true],
+    'last visible suffix byte' => ['sk_test_~', true],
+    'empty suffix' => ['sk_test_', false],
+    'space in suffix' => ['sk_test_has space', false],
+    'control byte in suffix' => ["sk_test_line\nbreak", false],
+    'DEL byte in suffix' => ["sk_test_\x7F", false],
+    'non-ASCII byte in suffix' => ["sk_test_\x80", false],
+]);
+
+it('matches a signature only for the exact body and configured shared secret', function (): void {
+    $body = '{"event":"transfer.success"}';
+    $client = paystackClientForHttpTest('sk_test_signature_key');
+    $signature = hash_hmac('sha512', $body, 'sk_test_signature_key');
+    $signatureFromOtherKey = hash_hmac('sha512', $body, 'sk_test_other_key');
+
+    expect($client->signatureMatchesBody($body, $signature))->toBeTrue()
+        ->and($client->signatureMatchesBody($body.' ', $signature))->toBeFalse()
+        ->and($client->signatureMatchesBody($body, $signatureFromOtherKey))->toBeFalse();
+});
+
+it('rejects signatures outside the exact lowercase SHA-512 text format', function (
+    string $signature,
+): void {
+    expect(paystackClientForHttpTest()->signatureMatchesBody('{}', $signature))->toBeFalse();
+})->with([
+    'one character short' => str_repeat('a', 127),
+    'one character long' => str_repeat('a', 129),
+    'uppercase hexadecimal' => str_repeat('A', 128),
+    'non-hexadecimal character' => str_repeat('a', 127).'g',
+    'space' => str_repeat('a', 127).' ',
+]);
+
 it('sends one authenticated bounded JSON request and returns only the parsed envelope', function (): void {
     $options = [];
 
@@ -46,12 +84,12 @@ it('sends one authenticated bounded JSON request and returns only the parsed env
     $response = paystackClientForHttpTest()->get('balance');
 
     expect($response->httpStatus)->toBe(HttpResponse::HTTP_OK)
-        ->and($response->providerStatus())->toBeTrue()
+        ->and($response->operationSucceeded())->toBeTrue()
         ->and($response->message())->toBe('Balances retrieved')
         ->and($response->data())->toBe([['currency' => 'NGN', 'balance' => 1700000]])
-        ->and($response->successful())->toBeTrue()
-        ->and($response->clientError())->toBeFalse()
-        ->and($response->serverError())->toBeFalse()
+        ->and($response->hasSuccessfulHttpStatus())->toBeTrue()
+        ->and($response->hasClientErrorHttpStatus())->toBeFalse()
+        ->and($response->hasServerErrorHttpStatus())->toBeFalse()
         ->and($response->latencyMs)->toBeGreaterThanOrEqual(0)
         ->and($options['connect_timeout'] ?? null)->toBe(5)
         ->and($options['timeout'] ?? null)->toBe(15)
@@ -72,9 +110,9 @@ it('classifies HTTP status families without treating one exact status as the who
 ): void {
     $response = new PaystackResponse($httpStatus, [], 0);
 
-    expect($response->successful())->toBe($successful)
-        ->and($response->clientError())->toBe($clientError)
-        ->and($response->serverError())->toBe($serverError);
+    expect($response->hasSuccessfulHttpStatus())->toBe($successful)
+        ->and($response->hasClientErrorHttpStatus())->toBe($clientError)
+        ->and($response->hasServerErrorHttpStatus())->toBe($serverError);
 })->with([
     'protocol lower bound' => [HttpResponse::HTTP_CONTINUE, false, false, false],
     'informational upper bound' => [199, false, false, false],
@@ -231,7 +269,7 @@ it('accepts the documented legacy string false only as an error status', functio
 
     $response = paystackClientForHttpTest()->get('balance');
 
-    expect($response->providerStatus())->toBeFalse()
+    expect($response->operationSucceeded())->toBeFalse()
         ->and($response->providerCode())->toBe('rate_limited');
 });
 
@@ -243,7 +281,7 @@ it('does not widen a string true into provider success', function (): void {
 
     $response = paystackClientForHttpTest()->get('balance');
 
-    expect($response->providerStatus())->toBeNull();
+    expect($response->operationSucceeded())->toBeNull();
 });
 
 it('classifies HTTP timeout statuses regardless of whether the response is JSON', function (
