@@ -3,6 +3,7 @@
 declare(strict_types=1);
 
 use App\Actions\Achievements\EvaluatePurchaseAchievements;
+use App\Actions\Achievements\GetUserAchievementProgress;
 use App\Actions\Achievements\UnlockAchievement;
 use App\Actions\Badges\EvaluateBadges;
 use App\Actions\Badges\UnlockBadge;
@@ -19,6 +20,7 @@ use App\Actions\Purchases\RecordPurchase;
 use App\Contracts\Achievements\AchievementProgressCalculator;
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Contracts\Payments\TransferRecipientGateway;
+use App\Data\Achievements\UserAchievementProgress;
 use App\Data\Cashback\CashbackPaymentClaim;
 use App\Data\Cashback\CashbackPayoutSupportRequest;
 use App\Data\Cashback\RecordedPaystackWebhook;
@@ -63,6 +65,8 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         RecordPurchaseInput::class,
         RecordPurchaseResult::class,
         RecordPurchase::class,
+        GetUserAchievementProgress::class,
+        UserAchievementProgress::class,
         AchievementProgressRegistry::class,
         PurchaseCountProgressCalculator::class,
         LifetimeSpendProgressCalculator::class,
