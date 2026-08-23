@@ -8,6 +8,7 @@ use App\Data\Cashback\CashbackPaymentClaim;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
 use App\Enums\CashbackRewardStatus;
+use App\Enums\CashbackTransferErrorCode;
 use App\Enums\PaymentProviderFailure;
 use App\Enums\PayoutAttemptStatus;
 use App\Exceptions\Payments\PaymentProviderException;
@@ -43,7 +44,7 @@ final readonly class ProcessCashbackPayment
 
             $result = new CashbackTransferResult(
                 status: PayoutAttemptStatus::PermanentRejection,
-                errorCode: 'provider_unavailable',
+                errorCode: CashbackTransferErrorCode::ProviderUnavailable,
                 errorMessage: 'The persisted payment provider is unavailable.',
             );
 
@@ -146,7 +147,7 @@ final readonly class ProcessCashbackPayment
                 'status' => $result->status,
                 'provider_transfer_code' => $result->transferCode,
                 'provider_http_status' => $result->httpStatus,
-                'provider_error_code' => $result->errorCode,
+                'provider_error_code' => $result->errorCode?->value,
                 'provider_error_message' => $result->errorMessage,
                 'provider_latency_ms' => $result->latencyMs,
                 'observed_balance_minor' => $result->observedBalanceMinor,
@@ -161,7 +162,7 @@ final readonly class ProcessCashbackPayment
 
             $rewardValues = [
                 'status' => $this->rewardStatusFor($result->status),
-                'last_error_code' => $result->errorCode,
+                'last_error_code' => $result->errorCode?->value,
                 'last_error_message' => $result->errorMessage,
                 'paid_at' => $result->status === PayoutAttemptStatus::Succeeded
                     ? $completedAt

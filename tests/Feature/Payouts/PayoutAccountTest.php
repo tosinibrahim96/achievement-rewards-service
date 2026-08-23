@@ -203,7 +203,7 @@ it('does not reinterpret or replace a stored account when the configured provide
             $user,
             new RegisterPayoutAccountInput('0000009876', '058'),
         );
-        test()->fail('The unregistered Paystack provider should fail safely.');
+        test()->fail('Paystack without a test credential should fail safely.');
     } catch (PaymentProviderException $exception) {
         expect($exception->failure)->toBe(PaymentProviderFailure::Unavailable);
     }

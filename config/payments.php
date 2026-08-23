@@ -11,8 +11,15 @@ return [
         'transfer_effect_namespace' => 'default',
     ],
 
+    'paystack' => [
+        'secret_key' => env('PAYSTACK_SECRET_KEY'),
+        'base_url' => env('PAYSTACK_BASE_URL', 'https://api.paystack.co'),
+        'connect_timeout_seconds' => 5,
+        'timeout_seconds' => 15,
+    ],
+
     'payout_account_lock' => [
-        'seconds' => 30,
+        'seconds' => 60,
         'wait_seconds' => 5,
     ],
 ];

@@ -6,9 +6,11 @@ use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
 use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
+use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PayoutAttemptStatus;
 use InvalidArgumentException;
+use Symfony\Component\HttpFoundation\Response as HttpResponse;
 
 it('carries provider-neutral transfer facts with typed values', function (): void {
     $balance = new TransferBalance(750_000, Currency::Ngn);
@@ -21,7 +23,7 @@ it('carries provider-neutral transfer facts with typed values', function (): voi
     $result = new CashbackTransferResult(
         status: PayoutAttemptStatus::Pending,
         transferCode: 'TRF_example',
-        httpStatus: 200,
+        httpStatus: HttpResponse::HTTP_OK,
         errorCode: null,
         errorMessage: null,
         latencyMs: 14,
@@ -65,8 +67,8 @@ it('rejects malformed optional transfer observations', function (array $override
     $valid = [
         'status' => PayoutAttemptStatus::InsufficientFunds,
         'transferCode' => null,
-        'httpStatus' => 422,
-        'errorCode' => 'insufficient_funds',
+        'httpStatus' => HttpResponse::HTTP_UNPROCESSABLE_ENTITY,
+        'errorCode' => CashbackTransferErrorCode::InsufficientFunds,
         'errorMessage' => 'The available balance is insufficient.',
         'latencyMs' => 12,
         'observedBalanceMinor' => 0,
@@ -76,12 +78,23 @@ it('rejects malformed optional transfer observations', function (array $override
         ->toThrow(InvalidArgumentException::class);
 })->with([
     'empty transfer code' => [['transferCode' => '']],
-    'empty error code' => [['errorCode' => '']],
     'empty error message' => [['errorMessage' => '']],
     'HTTP status below range' => [['httpStatus' => 99]],
     'HTTP status above range' => [['httpStatus' => 600]],
     'negative latency' => [['latencyMs' => -1]],
     'negative observed balance' => [['observedBalanceMinor' => -1]],
+]);
+
+it('accepts the inclusive HTTP protocol status bounds in transfer results', function (int $httpStatus): void {
+    $result = new CashbackTransferResult(
+        status: PayoutAttemptStatus::Ambiguous,
+        httpStatus: $httpStatus,
+    );
+
+    expect($result->httpStatus)->toBe($httpStatus);
+})->with([
+    'lower bound' => HttpResponse::HTTP_CONTINUE,
+    'upper bound' => 599,
 ]);
 
 it('rejects transfer results whose factual status contradicts provider effect identity', function (
@@ -119,5 +132,27 @@ it('freezes the factual payout attempt vocabulary', function (): void {
         'otp_required',
         'failed',
         'reversed',
+    ]);
+});
+
+it('freezes the normalized cashback transfer diagnostic vocabulary', function (): void {
+    expect(array_map(
+        static fn (CashbackTransferErrorCode $code): string => $code->value,
+        CashbackTransferErrorCode::cases(),
+    ))->toBe([
+        'invalid_provider_reference',
+        'provider_unavailable',
+        'provider_invalid_response',
+        'provider_transfer_identity_missing',
+        'provider_status_unknown',
+        'otp_required',
+        'transfer_failed',
+        'transfer_reversed',
+        'insufficient_funds',
+        'rate_limited',
+        'duplicate_reference',
+        'provider_rejected',
+        'provider_timeout',
+        'permanent_failure',
     ]);
 });

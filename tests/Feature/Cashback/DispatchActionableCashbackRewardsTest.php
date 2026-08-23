@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use App\Actions\Cashback\DispatchActionableCashbackRewards;
-use App\Actions\Cashback\DispatchCashbackPaymentJob;
+use App\Actions\Cashback\EnqueueCashbackPayment;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\PaymentProvider;
 use App\Enums\PayoutAttemptStatus;
@@ -285,7 +285,7 @@ it('releases the unique lock and rethrows when the queue push fails', function (
         ->andThrow(new RuntimeException('The queue transport is unavailable.'));
     $cashbackRewardId = 501;
 
-    expect(fn () => (new DispatchCashbackPaymentJob($cache, $failingBus))
+    expect(fn () => (new EnqueueCashbackPayment($cache, $failingBus))
         ->handle($cashbackRewardId))->toThrow(
             RuntimeException::class,
             'The queue transport is unavailable.',
@@ -294,7 +294,7 @@ it('releases the unique lock and rethrows when the queue push fails', function (
     $recoveredBus = Mockery::mock(Dispatcher::class);
     $recoveredBus->shouldReceive('dispatch')->once()->andReturn('queued');
 
-    expect((new DispatchCashbackPaymentJob($cache, $recoveredBus))
+    expect((new EnqueueCashbackPayment($cache, $recoveredBus))
         ->handle($cashbackRewardId))->toBeTrue();
 
     (new UniqueLock($cache))->release(new ProcessCashbackPaymentJob($cashbackRewardId));

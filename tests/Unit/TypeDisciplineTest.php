@@ -8,7 +8,7 @@ use App\Actions\Badges\EvaluateBadges;
 use App\Actions\Badges\UnlockBadge;
 use App\Actions\Cashback\CreateCashbackReward;
 use App\Actions\Cashback\DispatchActionableCashbackRewards;
-use App\Actions\Cashback\DispatchCashbackPaymentJob;
+use App\Actions\Cashback\EnqueueCashbackPayment;
 use App\Actions\Cashback\ListCashbackRewards;
 use App\Actions\Cashback\ProcessCashbackPayment;
 use App\Actions\Payouts\RegisterPayoutAccount;
@@ -34,6 +34,10 @@ use App\Infrastructure\Payments\FakeCashbackTransferGateway;
 use App\Infrastructure\Payments\FakeTransferEffectRegistry;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
+use App\Infrastructure\Payments\PaystackCashbackTransferGateway;
+use App\Infrastructure\Payments\PaystackClient;
+use App\Infrastructure\Payments\PaystackResponse;
+use App\Infrastructure\Payments\PaystackTransferRecipientGateway;
 use App\Models\Achievement;
 use App\Models\AchievementGroup;
 use App\Models\Badge;
@@ -61,7 +65,7 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         UnlockBadge::class,
         CreateCashbackReward::class,
         DispatchActionableCashbackRewards::class,
-        DispatchCashbackPaymentJob::class,
+        EnqueueCashbackPayment::class,
         ListCashbackRewards::class,
         ProcessCashbackPayment::class,
         RegisterPayoutAccount::class,
@@ -77,6 +81,10 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         FakeTransferEffectRegistry::class,
         FakeTransferRecipientGateway::class,
         PaymentProviderRegistry::class,
+        PaystackClient::class,
+        PaystackResponse::class,
+        PaystackTransferRecipientGateway::class,
+        PaystackCashbackTransferGateway::class,
     ];
 
     foreach ($finalReadonlyClasses as $class) {

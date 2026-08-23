@@ -10,7 +10,7 @@ use Illuminate\Contracts\Bus\Dispatcher;
 use Illuminate\Contracts\Cache\Repository;
 use Throwable;
 
-final readonly class DispatchCashbackPaymentJob
+final readonly class EnqueueCashbackPayment
 {
     public function __construct(
         private Repository $cache,
