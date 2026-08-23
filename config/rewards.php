@@ -7,4 +7,5 @@ use App\Enums\Currency;
 return [
     'badge_cashback_amount_minor' => 30_000,
     'currency' => Currency::Ngn->value,
+    'support_email' => env('CASHBACK_SUPPORT_EMAIL', 'support@example.test'),
 ];
