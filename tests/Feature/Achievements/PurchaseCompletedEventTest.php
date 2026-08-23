@@ -17,6 +17,7 @@ use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Log;
 use RuntimeException;
 
 uses(DatabaseMigrations::class);
@@ -31,21 +32,27 @@ function eventTestInput(User $user, string $reference): RecordPurchaseInput
     );
 }
 
-it('dispatches PurchaseCompleted only after the surrounding transaction commits', function (): void {
+it('dispatches PurchaseCompleted and logs the purchase only after the outer transaction commits', function (): void {
     Event::fake([PurchaseCompleted::class]);
+    Log::spy();
     $user = User::factory()->create();
 
     DB::transaction(function () use ($user): void {
         app(RecordPurchase::class)->handle(eventTestInput($user, 'ORDER-AFTER-COMMIT'));
 
         Event::assertNotDispatched(PurchaseCompleted::class);
+        Log::shouldNotHaveReceived('info', ['purchase.processed', Mockery::type('array')]);
     });
 
     Event::assertDispatchedTimes(PurchaseCompleted::class, 1);
+    Log::shouldHaveReceived('info')
+        ->once()
+        ->with('purchase.processed', Mockery::type('array'));
 });
 
-it('does not dispatch or retain a purchase when the transaction rolls back', function (): void {
+it('rolls back the purchase without dispatching or logging', function (): void {
     Event::fake([PurchaseCompleted::class]);
+    Log::spy();
     $this->seed(AchievementCatalogueSeeder::class);
     $user = User::factory()->create();
 
@@ -62,6 +69,23 @@ it('does not dispatch or retain a purchase when the transaction rolls back', fun
     expect(Purchase::query()->count())->toBe(0)
         ->and(UserAchievement::query()->count())->toBe(0);
     Event::assertNotDispatched(PurchaseCompleted::class);
+    Log::shouldNotHaveReceived('info', ['purchase.processed', Mockery::type('array')]);
+});
+
+it('keeps the purchase and dispatches PurchaseCompleted when its log fails', function (): void {
+    Event::fake([PurchaseCompleted::class]);
+    Log::spy();
+    Log::shouldReceive('info')
+        ->once()
+        ->with('purchase.processed', Mockery::type('array'))
+        ->andThrow(new RuntimeException('purchase log unavailable'));
+    $user = User::factory()->create();
+
+    $purchaseResult = app(RecordPurchase::class)->handle(eventTestInput($user, 'ORDER-LOG-FAILURE'));
+
+    expect($purchaseResult->wasDuplicate)->toBeFalse()
+        ->and(Purchase::query()->whereKey($purchaseResult->purchase->id)->exists())->toBeTrue();
+    Event::assertDispatchedTimes(PurchaseCompleted::class, 1);
 });
 
 it('discovers the queued achievement progression listener', function (): void {

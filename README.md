@@ -245,7 +245,7 @@ The callback locks the reward first and payout attempt second, matching initiati
 
 Exact `(provider, body_hash)` redelivery creates no second receipt, transition, log, or alert. Semantically identical JSON with different bytes may create an `unchanged` receipt, while the locked transition remains idempotent. A local transaction failure persists neither receipt nor payout update and returns `500`, allowing Paystack to redeliver the callback; that redelivery is a notification, not another money transfer. Authentic deliveries with a final receipt return empty `200 OK`, including invalid, unsupported, missing, mismatched, and unchanged facts that redelivery cannot repair.
 
-### Payout support escalation and logs
+### Payout support escalation
 
 Set a real deployment-only destination with `CASHBACK_SUPPORT_EMAIL`; `.env.example` deliberately uses the non-deliverable `support@example.test`. The first unresolved transition stamps `payout_attempts.support_alert_requested_at` while the attempt is locked, then requests one queued mail notification after commit:
 
@@ -258,13 +258,23 @@ Set a real deployment-only destination with `CASHBACK_SUPPORT_EMAIL`; `.env.exam
 
 `started`, `pending`, and `succeeded` do not alert. The notification contains only local reward/attempt IDs, category, a service-owned reason, and next action—never account/customer data, provider identifiers/text, request payload, signature, or secret. `support_alert_requested_at` proves intent, not queue acceptance or mailbox delivery. A queue-push failure is reported after the financial state commits and is not made atomic by this MVP. With the local default `MAIL_MAILER=log`, the safe mail is written to the Laravel log rather than delivered; production must configure a real mail transport as well as the support address. Horizon and `failed_jobs` remain the delivery diagnostics.
 
-PR #8 emits exactly three privacy-safe milestones after their database transaction commits:
+### Business workflow logs
 
-- `cashback.payout.processed` for an initiation result, including whether it changed stored state or lost the race to a callback;
-- `paystack.webhook.recorded` once per newly created receipt, with result-dependent info/debug/warning level;
-- `cashback.payout.support_requested` once before the queue attempt for the first committed support intent.
+The service tries to write one small structured log after each important business step finishes. Queued jobs and repeated work can create the same log again or make a later step appear first. An empty achievement or badge list means the check ran but found nothing new; a missing log cannot prove that the check ran. Each new log waits for the outermost database transaction to commit. The payout-account log also waits until the per-user cache lock has been released.
 
-Their contexts are explicit allowlists of local IDs, statuses, safe service error/category, provider HTTP status/latency where applicable, and the durable workflow correlation ID. Request ID remains in Laravel Context. Logs are searchable evidence; `cashback_rewards` and `payout_attempts` remain the financial source of truth. Post-commit logging and queueing cannot roll back a payout, and this compact feature adds no automatic retry, polling, scheduler, reconciliation worker, or logging framework.
+| Message | Level | Fields and meaning |
+| --- | --- | --- |
+| `purchase.processed` | `info` when created; `debug` for an exact duplicate | `purchase_id`, `user_id`, durable `correlation_id`, and `result` (`created` or `duplicate`) |
+| `achievement.evaluation.completed` | `info` | `purchase_id`, `user_id`, durable `correlation_id`, `unlocked_count`, and ordered `unlocked_achievement_names`, including `0` and `[]` when nothing new is unlocked |
+| `badge.evaluation.completed` | `info` | `user_id`, the latest user-achievement ID and its durable correlation ID (both `null` when the user has none), current `achievement_count`, ordered new `unlocked_badge_names`, and ordered new `cashback_reward_ids`, including empty lists |
+| `payout_account.saved` | `info` | `user_id`, `payout_account_id`, safe provider name, and `result` (`created` or `replaced`); this user-level action does not invent a purchase correlation ID |
+| `cashback.payout.processed` | `info` | Safe initiation result, including whether it changed stored state or lost the race to a callback |
+| `paystack.webhook.recorded` | Result-dependent `info`, `debug`, or `warning` | One record per newly created receipt; an exact byte redelivery creates no second record |
+| `cashback.payout.support_requested` | `warning` | The first committed unresolved-payout support intent, written before its notification queue attempt |
+
+Each workflow log uses a fixed allowlist of local IDs, statuses, safe names/results, safe service errors/categories, and provider HTTP status/latency only where needed. It excludes purchase/provider references, amounts, balances, account details, account/bank/customer names, credentials, raw payloads, signatures, provider error text, complete models, requests, data-transfer objects, and exceptions. Laravel Context supplies the request ID. The saved workflow correlation ID is added only when the business record has one.
+
+These logs help with searching and debugging, but they are not an audit ledger and do not prove that a queued job succeeded. A logging failure cannot reverse saved business data. A conflict, provider failure, or database rollback writes no false success log. Database rows—especially `cashback_rewards` and `payout_attempts`—remain the financial truth. This small feature adds no automatic retry, polling, scheduler, reconciliation worker, dashboard, trace system, or logging framework.
 
 ## Purchase-driven achievements
 

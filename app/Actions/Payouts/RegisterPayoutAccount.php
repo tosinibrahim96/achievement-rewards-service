@@ -20,8 +20,10 @@ use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use LogicException;
 use SensitiveParameter;
+use Throwable;
 
 final readonly class RegisterPayoutAccount
 {
@@ -48,16 +50,18 @@ final readonly class RegisterPayoutAccount
         $lock = Cache::lock("payout-account:user:{$user->id}", $this->lockSeconds);
 
         try {
-            /** @var PayoutAccountRegistrationResult $result */
-            $result = $lock->block(
+            /** @var PayoutAccountRegistrationResult $registration */
+            $registration = $lock->block(
                 $this->lockWaitSeconds,
                 fn (): PayoutAccountRegistrationResult => $this->registerWhileLocked($user, $input),
             );
-
-            return $result;
         } catch (LockTimeoutException $exception) {
             throw new PayoutAccountBusyException(previous: $exception);
         }
+
+        $this->logSavedAccount($registration);
+
+        return $registration;
     }
 
     private function registerWhileLocked(
@@ -114,6 +118,31 @@ final readonly class RegisterPayoutAccount
             }
 
             throw new PayoutAccountConflictException(previous: $exception);
+        }
+    }
+
+    private function logSavedAccount(PayoutAccountRegistrationResult $registration): void
+    {
+        $payoutAccount = $registration->payoutAccount;
+
+        try {
+            Log::info('payout_account.saved', [
+                'user_id' => $payoutAccount->user_id,
+                'payout_account_id' => $payoutAccount->id,
+                'provider' => $payoutAccount->provider->value,
+                'result' => $registration->wasCreated ? 'created' : 'replaced',
+            ]);
+        } catch (Throwable $exception) {
+            $this->reportLogFailure($exception);
+        }
+    }
+
+    private function reportLogFailure(Throwable $exception): void
+    {
+        try {
+            report($exception);
+        } catch (Throwable) {
+            // The account is already committed; a reporting failure must not change the result.
         }
     }
 }

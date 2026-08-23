@@ -9,7 +9,10 @@ use App\Models\Achievement;
 use App\Models\AchievementGroup;
 use App\Models\Purchase;
 use App\Models\User;
+use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 final readonly class EvaluatePurchaseAchievements
 {
@@ -22,6 +25,8 @@ final readonly class EvaluatePurchaseAchievements
     {
         DB::transaction(function () use ($purchase): void {
             $user = User::query()->lockForUpdate()->findOrFail($purchase->user_id);
+            $unlockedAchievementNames = [];
+            $this->logAchievementResultAfterCommit($purchase, $unlockedAchievementNames);
             $groups = AchievementGroup::query()
                 ->where('is_active', true)
                 ->orderBy('sort_order')
@@ -39,9 +44,51 @@ final readonly class EvaluatePurchaseAchievements
                     ->get();
 
                 foreach ($achievements as $achievement) {
-                    $this->unlockAchievement->handle($user, $achievement, $purchase);
+                    $userAchievement = $this->unlockAchievement->handle($user, $achievement, $purchase);
+
+                    if ($userAchievement !== null) {
+                        $unlockedAchievementNames[] = $achievement->name;
+                    }
                 }
             }
         });
+    }
+
+    /** @param list<string> $unlockedAchievementNames */
+    private function logAchievementResultAfterCommit(Purchase $purchase, array &$unlockedAchievementNames): void
+    {
+        $purchaseDetails = [
+            'purchase_id' => $purchase->id,
+            'user_id' => $purchase->user_id,
+            'correlation_id' => $purchase->correlation_id,
+        ];
+
+        // Register before unlocking so a later event failure cannot skip this log.
+        // Capture the names by reference so the callback sees the completed list after commit.
+        DB::afterCommit(function () use ($purchaseDetails, &$unlockedAchievementNames): void {
+            $logDetails = [
+                ...$purchaseDetails,
+                'unlocked_count' => count($unlockedAchievementNames),
+                'unlocked_achievement_names' => $unlockedAchievementNames,
+            ];
+
+            try {
+                Context::scope(
+                    fn () => Log::info('achievement.evaluation.completed', $logDetails),
+                    ['correlation_id' => $logDetails['correlation_id']],
+                );
+            } catch (Throwable $exception) {
+                $this->reportLogFailure($exception);
+            }
+        });
+    }
+
+    private function reportLogFailure(Throwable $exception): void
+    {
+        try {
+            report($exception);
+        } catch (Throwable) {
+            // The achievement changes are already committed; a reporting failure must not change the result.
+        }
     }
 }
