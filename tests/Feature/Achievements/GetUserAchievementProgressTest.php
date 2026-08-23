@@ -238,7 +238,7 @@ it('returns no next badge after Master', function (): void {
         ->and($progress->remainingToUnlockNextBadge)->toBe(0);
 });
 
-it('keeps the query count at four as data grows', function (): void {
+it('uses three focused queries as data grows', function (): void {
     $user = User::factory()->create();
     $action = app(GetUserAchievementProgress::class);
     $queries = [];
@@ -253,6 +253,7 @@ it('keeps the query count at four as data grows', function (): void {
 
     $action->handle($user);
     $initialQueryCount = count($queries);
+    $initialQueries = $queries;
 
     foreach (range(1, 12) as $sequence) {
         $group = AchievementGroup::factory()->create([
@@ -288,8 +289,13 @@ it('keeps the query count at four as data grows', function (): void {
     $expandedProgress = $action->handle($user);
     $expandedQueryCount = count($queries);
 
-    expect($initialQueryCount)->toBe(4)
+    expect($initialQueryCount)->toBe(3)
         ->and($expandedQueryCount)->toBe($initialQueryCount)
+        ->and($initialQueries[0])->toContain('inner join "user_badges"')
+        ->and($initialQueries[1])->toContain('left join "user_achievements"')
+        ->and($initialQueries[1])->toContain('"achievements"."name"')
+        ->and($initialQueries[1])->not->toContain('"achievements".*')
+        ->and($initialQueries[2])->toContain('from "badges"')
         ->and($expandedProgress->unlockedAchievements)->toHaveCount(12)
         ->and($expandedProgress->nextAvailableAchievements)->toHaveCount(14);
 });

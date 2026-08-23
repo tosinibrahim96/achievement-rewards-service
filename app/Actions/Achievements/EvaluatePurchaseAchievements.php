@@ -32,9 +32,23 @@ final readonly class EvaluatePurchaseAchievements
                 ->orderBy('sort_order')
                 ->orderBy('id')
                 ->get();
+            /** @var array<string, int> $progressByMetric */
+            $progressByMetric = [];
 
             foreach ($groups as $group) {
-                $progress = $this->progressRegistry->for($group->metric)->progressFor($user);
+                $metric = $group->metric->value;
+
+                /*
+                 * More than one group may use the same metric. Its calculator can
+                 * scan the user's purchases, so calculate it once per evaluation.
+                 */
+                if (! array_key_exists($metric, $progressByMetric)) {
+                    $progressByMetric[$metric] = $this->progressRegistry
+                        ->for($group->metric)
+                        ->progressFor($user);
+                }
+
+                $progress = $progressByMetric[$metric];
                 $achievements = Achievement::query()
                     ->whereBelongsTo($group, 'group')
                     ->where('is_active', true)
@@ -63,8 +77,10 @@ final readonly class EvaluatePurchaseAchievements
             'correlation_id' => $purchase->correlation_id,
         ];
 
-        // Register before unlocking so a later event failure cannot skip this log.
-        // Capture the names by reference so the callback sees the completed list after commit.
+        /*
+         * Register before unlocking so a later event failure cannot skip this log.
+         * Capture the names by reference so the callback sees the completed list.
+         */
         DB::afterCommit(function () use ($purchaseDetails, &$unlockedAchievementNames): void {
             $logDetails = [
                 ...$purchaseDetails,
@@ -88,7 +104,10 @@ final readonly class EvaluatePurchaseAchievements
         try {
             report($exception);
         } catch (Throwable) {
-            // The achievement changes are already committed; a reporting failure must not change the result.
+            /*
+             * The achievement changes are already committed. A reporting failure
+             * must not change the result returned by the business workflow.
+             */
         }
     }
 }
