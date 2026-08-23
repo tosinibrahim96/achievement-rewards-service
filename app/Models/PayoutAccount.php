@@ -10,9 +10,11 @@ use Carbon\CarbonImmutable;
 use Database\Factories\PayoutAccountFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * @property int $id
@@ -26,6 +28,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property Currency $currency
  * @property CarbonImmutable $verified_at
  * @property-read User $user
+ * @property-read Collection<int, PayoutAttempt> $payoutAttempts
  */
 #[Fillable([
     'user_id',
@@ -48,6 +51,12 @@ class PayoutAccount extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    /** @return HasMany<PayoutAttempt, $this> */
+    public function payoutAttempts(): HasMany
+    {
+        return $this->hasMany(PayoutAttempt::class);
     }
 
     /** @return array<string, string> */

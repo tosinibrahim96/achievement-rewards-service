@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Infrastructure\Payments;
 
+use App\Contracts\Payments\CashbackTransferGateway;
 use App\Contracts\Payments\TransferRecipientGateway;
 use App\Enums\PaymentProvider;
 use App\Exceptions\Payments\PaymentProviderException;
@@ -16,26 +17,44 @@ final readonly class PaymentProviderRegistry
     /** @var array<string, TransferRecipientGateway> */
     private array $recipientGateways;
 
+    /** @var array<string, CashbackTransferGateway> */
+    private array $transferGateways;
+
     /**
      * @param  iterable<int, TransferRecipientGateway>  $recipientGateways
+     * @param  iterable<int, CashbackTransferGateway>  $transferGateways
      */
     public function __construct(
         #[Tag(TransferRecipientGateway::class)] iterable $recipientGateways,
+        #[Tag(CashbackTransferGateway::class)] iterable $transferGateways,
         #[Config('payments.default', 'fake')] private string $defaultProvider,
     ) {
-        $indexed = [];
+        $indexedRecipients = [];
 
         foreach ($recipientGateways as $gateway) {
             $provider = $gateway->provider()->value;
 
-            if (array_key_exists($provider, $indexed)) {
+            if (array_key_exists($provider, $indexedRecipients)) {
                 throw new LogicException('Only one transfer recipient gateway may be registered per provider.');
             }
 
-            $indexed[$provider] = $gateway;
+            $indexedRecipients[$provider] = $gateway;
         }
 
-        $this->recipientGateways = $indexed;
+        $indexedTransfers = [];
+
+        foreach ($transferGateways as $gateway) {
+            $provider = $gateway->provider()->value;
+
+            if (array_key_exists($provider, $indexedTransfers)) {
+                throw new LogicException('Only one cashback transfer gateway may be registered per provider.');
+            }
+
+            $indexedTransfers[$provider] = $gateway;
+        }
+
+        $this->recipientGateways = $indexedRecipients;
+        $this->transferGateways = $indexedTransfers;
     }
 
     public function defaultRecipientGateway(): TransferRecipientGateway
@@ -52,5 +71,10 @@ final readonly class PaymentProviderRegistry
     public function recipientGatewayFor(PaymentProvider $provider): TransferRecipientGateway
     {
         return $this->recipientGateways[$provider->value] ?? throw PaymentProviderException::unavailable();
+    }
+
+    public function transferGatewayFor(PaymentProvider $provider): CashbackTransferGateway
+    {
+        return $this->transferGateways[$provider->value] ?? throw PaymentProviderException::unavailable();
     }
 }
