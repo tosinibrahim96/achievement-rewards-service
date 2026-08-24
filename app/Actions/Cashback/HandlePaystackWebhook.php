@@ -36,8 +36,8 @@ final readonly class HandlePaystackWebhook
     private const string TRANSFER_SOURCE = 'balance';
 
     /*
-     * readPrintableText() accepts one byte per character, so these byte limits
-     * also fit their matching database varchar lengths.
+     * readPrintableText() accepts ASCII only, so each character is one byte. These
+     * limits match the database columns.
      */
     private const int EVENT_TYPE_MAX_BYTES = 100;
 
@@ -53,8 +53,8 @@ final readonly class HandlePaystackWebhook
         #[SensitiveParameter] ?string $signature,
     ): void {
         /*
-         * A nested Laravel transaction is only a savepoint. Reject one so the
-         * receipt and payout facts commit together before logging or support work.
+         * Do not run inside another transaction. Laravel would only add a savepoint,
+         * so outer code could delay or undo these changes after we log or email.
          */
         if (DB::connection()->transactionLevel() > 0) {
             throw new LogicException('Paystack webhook handling cannot run inside an existing database transaction.');
@@ -69,8 +69,7 @@ final readonly class HandlePaystackWebhook
         );
 
         /*
-         * A null result means createOrFirst() found this exact delivery already.
-         * Its first processing result was committed, so there is no work to repeat.
+         * A null result means this exact webhook was handled before.
          */
         if ($recordedWebhook === null) {
             return;
@@ -91,9 +90,9 @@ final readonly class HandlePaystackWebhook
         #[SensitiveParameter] string $rawBody,
     ): ?RecordedPaystackWebhook {
         /*
-         * The signature above authenticates the body. This SHA-256 value only
-         * identifies identical bytes, while the unique key picks one concurrent
-         * createOrFirst() winner and lets replays reuse its durable receipt.
+         * The signature shows that the body was signed with our Paystack secret.
+         * This hash spots the same body again, and the unique database key lets only
+         * one request save its receipt.
          */
         $receipt = ProviderWebhookReceipt::query()->createOrFirst(
             [
@@ -206,8 +205,9 @@ final readonly class HandlePaystackWebhook
         #[SensitiveParameter] PaystackTransferCallback $callback,
     ): RecordedPaystackWebhook {
         /*
-         * Lock the reward before its latest attempt, matching the payout processor's
-         * lock order so both flows cannot wait on these rows in opposite order.
+         * Payment processing also locks the reward before the attempt. Using the
+         * same order stops payment processing and the webhook from waiting on each
+         * other.
          */
         $reward = CashbackReward::query()
             ->where('provider_reference', $callback->providerReference)
@@ -229,8 +229,9 @@ final readonly class HandlePaystackWebhook
         }
 
         /*
-         * A valid signature authenticates Paystack's bytes, not their connection
-         * to this local reward. Match every stored payment identity before writing.
+         * A valid signature shows that the callback was signed with our Paystack
+         * secret. It does not say which local payment it belongs to, so match every
+         * payment detail.
          */
         if (! $this->callbackMatchesPayment($reward, $attempt, $callback)) {
             return $this->saveReceiptResult($receipt, ProviderWebhookReceiptResult::Mismatch);
@@ -242,11 +243,12 @@ final readonly class HandlePaystackWebhook
         $receiptResult = ProviderWebhookReceiptResult::Unchanged;
 
         /*
-         * These are separate fail-closed questions: do the two local rows agree,
-         * and is this event allowed to change the attempt's current state?
+         * The reward and attempt must describe the same outcome. If they do not,
+         * leave both unchanged rather than guess which row is right. Even when they
+         * agree, do not let a late callback reopen a finished attempt.
          */
-        if ($this->rewardAndAttemptStatusesMatch($reward, $attempt)
-            && $this->eventCanChangeAttempt($attempt->status, $callback->event)) {
+        if ($reward->status === CashbackRewardStatus::forAttempt($attempt->status)
+            && $callback->event->canChangeAttemptFrom($attempt->status)) {
             $callbackTime = now();
             [$errorCode, $errorMessage] = $this->errorForEvent($callback->event);
             $newAttemptStatus = $callback->event->newAttemptStatus();
@@ -315,42 +317,6 @@ final readonly class HandlePaystackWebhook
             && $attempt->getRawOriginal('currency') === Currency::Ngn->value
             && ($attempt->provider_transfer_code === null
                 || $attempt->provider_transfer_code === $callback->transferCode);
-    }
-
-    private function eventCanChangeAttempt(
-        PayoutAttemptStatus $currentStatus,
-        PaystackTransferEvent $event,
-    ): bool {
-        return match ($currentStatus) {
-            PayoutAttemptStatus::Started,
-            PayoutAttemptStatus::Ambiguous,
-            PayoutAttemptStatus::Pending,
-            PayoutAttemptStatus::OtpRequired => true,
-            PayoutAttemptStatus::Succeeded => $event === PaystackTransferEvent::Reversed,
-            PayoutAttemptStatus::InsufficientFunds,
-            PayoutAttemptStatus::RetryableRejection,
-            PayoutAttemptStatus::PermanentRejection,
-            PayoutAttemptStatus::Failed,
-            PayoutAttemptStatus::Reversed => false,
-        };
-    }
-
-    private function rewardAndAttemptStatusesMatch(
-        #[SensitiveParameter] CashbackReward $reward,
-        #[SensitiveParameter] PayoutAttempt $attempt,
-    ): bool {
-        return match ($attempt->status) {
-            PayoutAttemptStatus::Started,
-            PayoutAttemptStatus::Ambiguous => $reward->status === CashbackRewardStatus::Processing,
-            PayoutAttemptStatus::Pending => $reward->status === CashbackRewardStatus::Pending,
-            PayoutAttemptStatus::Succeeded => $reward->status === CashbackRewardStatus::Paid,
-            PayoutAttemptStatus::InsufficientFunds => $reward->status === CashbackRewardStatus::AwaitingFunds,
-            PayoutAttemptStatus::RetryableRejection,
-            PayoutAttemptStatus::PermanentRejection,
-            PayoutAttemptStatus::OtpRequired,
-            PayoutAttemptStatus::Failed,
-            PayoutAttemptStatus::Reversed => $reward->status === CashbackRewardStatus::RequiresAttention,
-        };
     }
 
     /** @return array{CashbackTransferErrorCode|null, string|null} */
@@ -456,8 +422,8 @@ final readonly class HandlePaystackWebhook
             $byte = ord($value[$index]);
 
             /*
-             * Space is printable byte 32 and may appear inside a value. Tilde is
-             * byte 126, the final printable ASCII byte; byte 127 is DEL.
+             * Printable ASCII starts with space (byte 32) and ends with tilde (byte
+             * 126). Byte 127 is Delete, a control character, so it is not allowed.
              */
             if ($byte < self::FIRST_PRINTABLE_ASCII_BYTE
                 || $byte > self::LAST_PRINTABLE_ASCII_BYTE) {
@@ -474,8 +440,8 @@ final readonly class HandlePaystackWebhook
             report($exception);
         } catch (Throwable) {
             /*
-             * This callback is already committed. Reporting cannot roll it back,
-             * and a second reporting failure must not block support dispatch.
+             * The callback is already saved, so a logging error cannot undo it or
+             * stop the support message.
              */
         }
     }

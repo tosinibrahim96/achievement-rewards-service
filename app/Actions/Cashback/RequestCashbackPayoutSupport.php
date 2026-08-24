@@ -111,8 +111,8 @@ final readonly class RequestCashbackPayoutSupport
             report($exception);
         } catch (Throwable) {
             /*
-             * State is already committed. Reporting cannot make the separate log,
-             * queue handoff, or eventual mail delivery one atomic operation.
+             * The request is already saved. Logging and queueing the email are
+             * separate, so a failure in either must not undo or stop the other.
              */
         }
     }

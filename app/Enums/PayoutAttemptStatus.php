@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace App\Enums;
 
 /**
- * The factual state of one attempt to send a cashback transfer.
+ * The state of one attempt to pay a cashback reward.
  */
 enum PayoutAttemptStatus: string
 {

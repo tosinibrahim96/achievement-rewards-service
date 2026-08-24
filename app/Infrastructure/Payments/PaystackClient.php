@@ -113,9 +113,9 @@ final readonly class PaystackClient
         $secretLength = strlen($this->secretKey);
 
         /*
-         * A secret suffix may contain visible ASCII from `!` (byte 33) through
-         * `~` (byte 126). Space, control bytes, DEL, and non-ASCII are rejected
-         * before the secret can be placed in an Authorization header.
+         * The part after sk_test_ may use visible ASCII bytes 33 (!) through 126 (~).
+         * Reject space (32), control bytes, Delete (127), and non-ASCII bytes before
+         * putting the secret in the Authorization header.
          */
         for ($index = strlen(self::TEST_SECRET_KEY_PREFIX); $index < $secretLength; $index++) {
             $byte = ord($this->secretKey[$index]);
@@ -141,10 +141,11 @@ final readonly class PaystackClient
         $secretKey = $this->secretKey;
 
         /*
-         * HMAC combines the shared secret with the exact request bytes. SHA-512
-         * returns 128 lowercase hexadecimal characters here, and hash_equals()
-         * compares them without stopping early based on matching content.
-         * This authenticates the bytes; it does not encrypt them or stop replay.
+         * Paystack uses the exact body and our shared secret to make a SHA-512 HMAC:
+         * a hash that needs the secret. We make it again, then hash_equals() compares
+         * the signatures without revealing how many characters match. A match means
+         * the signature was made with the secret. It does not hide the body or stop
+         * the same body and signature being sent again.
          */
         $expectedSignature = hash_hmac(
             self::WEBHOOK_SIGNATURE_ALGORITHM,

@@ -10,6 +10,6 @@ use RuntimeException;
 final class InvalidCredentialsException extends RuntimeException implements ShouldntReport
 {
     /*
-     * Invalid login attempts are expected client errors, not reportable server failures.
+     * Wrong login details are normal client errors, so Laravel should not report them.
      */
 }

@@ -32,9 +32,9 @@ final class EvaluatePurchaseAchievementsListener implements ShouldQueue
     public function middleware(PurchaseCompleted $event): array
     {
         /*
-         * Achievement evaluation for one user does not overlap. A collision is
-         * retried after one second, while the lease bounds a lock left behind by
-         * a stopped worker. This lock does not guarantee queue order.
+         * Run one achievement check per user at a time. Retry after one second if
+         * the lock is busy. The expiry keeps a stopped worker from blocking later
+         * jobs forever. Jobs may still run out of queue order.
          */
         return [
             (new WithoutOverlapping("user:{$event->purchase->user_id}"))

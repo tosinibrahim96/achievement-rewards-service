@@ -128,8 +128,8 @@ final readonly class EvaluateBadges
             report($exception);
         } catch (Throwable) {
             /*
-             * The badge changes are already committed. A reporting failure must
-             * not change the result of the business workflow.
+             * The badge changes are already saved, so a reporting failure must not
+             * change the result.
              */
         }
     }

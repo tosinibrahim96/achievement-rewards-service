@@ -40,10 +40,10 @@ final readonly class FakeTransferEffectRegistry
             return null;
         }
 
-        $storedFingerprint = $record['request_fingerprint'] ?? null;
+        $storedDetailsHash = $record['request_fingerprint'] ?? null;
 
-        if (! is_string($storedFingerprint)
-            || ! hash_equals($storedFingerprint, $this->requestFingerprint($request))) {
+        if (! is_string($storedDetailsHash)
+            || ! hash_equals($storedDetailsHash, $this->requestDetailsHash($request))) {
             throw new LogicException('The fake transfer reference is already bound to different payout details.');
         }
 
@@ -67,7 +67,7 @@ final readonly class FakeTransferEffectRegistry
 
         $record = [
             'version' => self::RECORD_VERSION,
-            'request_fingerprint' => $this->requestFingerprint($request),
+            'request_fingerprint' => $this->requestDetailsHash($request),
             'status' => $status->value,
             'transfer_code' => 'TRF_FAKE_'.hash(self::HASH_ALGORITHM, $request->providerReference),
         ];
@@ -79,9 +79,9 @@ final readonly class FakeTransferEffectRegistry
         }
 
         /*
-         * SETNX lets only the first contender save the simulated provider effect.
-         * Ignore its winner flag and reread: every contender must return the same
-         * stored result and verify that the reference still means the same request.
+         * SETNX means "set if not exists." Only the first caller can save a result.
+         * Read the saved result because this caller may have lost that race. The
+         * read also checks that the reference still has the same payment details.
          */
         Redis::connection('default')->command('setnx', [
             $this->keyForReference($request->providerReference),
@@ -166,12 +166,11 @@ final readonly class FakeTransferEffectRegistry
         );
     }
 
-    private function requestFingerprint(CashbackTransferRequest $request): string
+    private function requestDetailsHash(CashbackTransferRequest $request): string
     {
         /*
-         * The stable reference is idempotent only for these exact payout facts.
-         * The fingerprint makes conflicting reuse fail instead of returning a
-         * simulated transfer created for a different recipient or amount.
+         * This hash covers the provider, reference, recipient, amount, and currency.
+         * The reference can be reused only when all those details are the same.
          */
         return hash(self::HASH_ALGORITHM, implode('|', [
             PaymentProvider::Fake->value,
@@ -185,8 +184,8 @@ final readonly class FakeTransferEffectRegistry
     private function ensureSafeKeyPart(string $value, string $description): void
     {
         /*
-         * These values become colon-separated Redis key parts. Whole-string
-         * matching permits familiar names without allowing another key segment.
+         * These values become parts of a Redis key. Allow only letters, numbers,
+         * dots, underscores, and hyphens so one value cannot add another key part.
          */
         if ($value === '' || preg_match(self::SAFE_KEY_PART_PATTERN, $value) !== 1) {
             throw new LogicException("The {$description} must use only letters, numbers, dots, underscores, or hyphens.");
