@@ -34,8 +34,8 @@ final class RegisterPayoutAccountRequest extends FormRequest
     public function rules(): array
     {
         return [
-            'account_number' => ['required', 'string', 'regex:/^\d{10}$/'],
-            'bank_code' => ['required', 'string', 'regex:/^\d{3}$/'],
+            'account_number' => ['required', 'string', 'regex:/\A[0-9]{10}\z/'],
+            'bank_code' => ['required', 'string', 'regex:/\A[0-9]{3}\z/'],
         ];
     }
 

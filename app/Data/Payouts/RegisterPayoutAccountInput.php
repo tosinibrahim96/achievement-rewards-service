@@ -14,11 +14,11 @@ final readonly class RegisterPayoutAccountInput
         public string $accountNumber,
         public string $bankCode,
     ) {
-        if (preg_match('/^\d{10}$/', $accountNumber) !== 1) {
+        if (preg_match('/\A[0-9]{10}\z/', $accountNumber) !== 1) {
             throw new InvalidArgumentException('A payout account number must contain exactly ten digits.');
         }
 
-        if (preg_match('/^\d{3}$/', $bankCode) !== 1) {
+        if (preg_match('/\A[0-9]{3}\z/', $bankCode) !== 1) {
             throw new InvalidArgumentException('A payout bank code must contain exactly three digits.');
         }
     }

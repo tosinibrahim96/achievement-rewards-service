@@ -23,7 +23,7 @@ final readonly class CreatedTransferRecipient
             throw new InvalidArgumentException('A created transfer recipient requires canonical provider details.');
         }
 
-        if (preg_match('/^\d{3}$/', $bankCode) !== 1 || preg_match('/^\d{4}$/', $accountLastFour) !== 1) {
+        if (preg_match('/\A[0-9]{3}\z/', $bankCode) !== 1 || preg_match('/\A[0-9]{4}\z/', $accountLastFour) !== 1) {
             throw new InvalidArgumentException('A created transfer recipient contains invalid masked bank details.');
         }
     }

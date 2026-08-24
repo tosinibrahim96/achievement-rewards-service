@@ -17,8 +17,10 @@ it('rejects malformed bank details at the reusable payout input boundary', funct
 })->with([
     'short account number' => ['00001234', '057'],
     'non-digit account number' => ['00000012x4', '057'],
+    'account number ending in a newline' => ["0000001234\n", '057'],
     'short bank code' => ['0000001234', '57'],
     'non-digit bank code' => ['0000001234', '05x'],
+    'bank code ending in a newline' => ['0000001234', "057\n"],
 ]);
 
 it('rejects incomplete or malformed canonical recipient results', function (array $override): void {
@@ -39,5 +41,7 @@ it('rejects incomplete or malformed canonical recipient results', function (arra
     'empty account name' => [['accountName' => '']],
     'empty bank name' => [['bankName' => '']],
     'malformed bank code' => [['bankCode' => '57']],
+    'bank code ending in a newline' => [['bankCode' => "057\n"]],
     'malformed last four' => [['accountLastFour' => '12x4']],
+    'last four ending in a newline' => [['accountLastFour' => "1234\n"]],
 ]);
