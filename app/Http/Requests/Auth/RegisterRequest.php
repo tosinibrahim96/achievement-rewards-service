@@ -28,7 +28,7 @@ final class RegisterRequest extends FormRequest
             'email' => ['required', 'string', 'email:rfc', 'max:255', Rule::unique(User::class, 'email')],
             'password' => ['required', 'string', 'max:255', Password::min(8), 'confirmed'],
             'device_name' => ['sometimes', 'string', 'max:255'],
-            'account_type' => ['prohibited'],
+            'account_type' => ['missing'],
         ];
     }
 

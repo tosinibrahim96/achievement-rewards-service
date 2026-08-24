@@ -6,7 +6,7 @@ namespace App\Data\Auth;
 
 use SensitiveParameter;
 
-final readonly class LoginCustomerInput
+final readonly class LoginInput
 {
     public function __construct(
         public string $email,
