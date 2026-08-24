@@ -8,11 +8,11 @@ use App\Actions\Achievements\UnlockAchievement;
 use App\Actions\Badges\EvaluateBadges;
 use App\Actions\Badges\UnlockBadge;
 use App\Actions\Cashback\CreateCashbackReward;
-use App\Actions\Cashback\DispatchActionableCashbackRewards;
 use App\Actions\Cashback\EnqueueCashbackPayment;
 use App\Actions\Cashback\HandlePaystackWebhook;
 use App\Actions\Cashback\ListCashbackRewards;
 use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\QueueCashbackPayouts;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
 use App\Actions\Cashback\VerifyPaystackWebhookSignature;
 use App\Actions\Payouts\RegisterPayoutAccount;
@@ -75,7 +75,7 @@ it('uses final readonly classes for leaf values and stateless actions without fr
         EvaluateBadges::class,
         UnlockBadge::class,
         CreateCashbackReward::class,
-        DispatchActionableCashbackRewards::class,
+        QueueCashbackPayouts::class,
         EnqueueCashbackPayment::class,
         ListCashbackRewards::class,
         HandlePaystackWebhook::class,
