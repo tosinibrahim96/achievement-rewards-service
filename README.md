@@ -388,6 +388,7 @@ trusted POST
     -> PostgreSQL transaction locks that user's row and counts durable unlocks
     -> every newly crossed active badge is persisted in rank order
     -> create one NGN 300 cashback reward in the same badge transaction
+    -> for each new reward awaiting an account, queue one customer email after commit
     -> dispatch one BadgeUnlocked after commit per new badge
     -> queued wake-up listener asks QueueCashbackPayouts to find ready rewards for that user
     -> queue one unique job carrying only each cashback reward ID
@@ -417,6 +418,8 @@ Both events implement after-commit dispatch. A transaction rollback therefore re
 | `ready_for_payout` | A verified account exists and no payout has started | Eligible to be queued; it does not mean paid |
 
 Badge-first and account-first customers converge before a listener runs. A badge created without an account starts awaiting, and the later account transaction changes every clean waiting reward to ready. If the account exists first, the badge transaction creates the reward ready immediately. Both transactions lock the same customer row before deciding, so the stored state does not depend on queue timing.
+
+Only a newly inserted `awaiting_payout_account` reward requests `CashbackRewardNeedsPayoutAccount`. Laravel routes the queued mail to the customer's registered email address after the outer badge/reward transaction commits. The message names the badge and formats the snapshotted integer amount, tells the customer to add a payout account, and contains no action link, account/provider details, or internal identifiers. Account-first rewards, creation replays, and rolled-back transactions request no message. The application does not claim that the registered address is verified or that queue/mail delivery is exactly once; local mail uses the log transport and tests use the array transport.
 
 Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: `QueueCashbackPayoutsOnBadgeUnlocked` and `QueueCashbackPayoutsOnPayoutAccountVerified` ask `QueueCashbackPayouts` to re-query all ready rewards without a payout and queue one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks the reward, requires `ready_for_payout`, rechecks the verified account, snapshots the provider and destination into one durable `payouts` row, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
 
