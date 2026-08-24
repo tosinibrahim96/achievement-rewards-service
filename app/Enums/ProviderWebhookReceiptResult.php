@@ -5,7 +5,8 @@ declare(strict_types=1);
 namespace App\Enums;
 
 /**
- * What the webhook handler did with one delivery; Applied may record failure or reversal facts.
+ * What happened when we handled one webhook. Applied may mean success, failure,
+ * or reversal.
  */
 enum ProviderWebhookReceiptResult: string
 {

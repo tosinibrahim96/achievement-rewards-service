@@ -38,9 +38,9 @@ final readonly class ProcessCashbackPayment
         }
 
         /*
-         * The first transaction commits a durable claim, then provider I/O runs
-         * without database locks. A second transaction saves the observed result.
-         * The provider call cannot be rolled back by either database transaction.
+         * First save that this payment has started. Call the provider with no
+         * database locks held, then save its result. A database rollback cannot
+         * undo the provider call.
          */
         $claim = $this->claimPayment($cashbackRewardId);
 
@@ -102,8 +102,8 @@ final readonly class ProcessCashbackPayment
                 report($exception);
             } catch (Throwable) {
                 /*
-                 * The payout transaction has committed. A second reporting failure
-                 * must not prevent the separate support request from being sent.
+                 * The payout result is already saved. A logging error must not stop
+                 * the support message.
                  */
             }
         }
@@ -210,9 +210,8 @@ final readonly class ProcessCashbackPayment
             $supportRequest = null;
 
             /*
-             * A Paystack webhook may have committed newer facts while the provider
-             * request was in flight. Only the original claim state may be replaced
-             * by this older HTTP response.
+             * A webhook may update these rows while we wait for the provider. Save
+             * this response only if both rows are still in the states we started with.
              */
             if ($reward->status === CashbackRewardStatus::Processing
                 && $attempt->status === PayoutAttemptStatus::Started) {
@@ -235,7 +234,7 @@ final readonly class ProcessCashbackPayment
                 ]);
 
                 $rewardValues = [
-                    'status' => $this->rewardStatusForAttempt($transferResult->status),
+                    'status' => CashbackRewardStatus::forAttempt($transferResult->status),
                     'last_error_code' => $transferResult->errorCode?->value,
                     'last_error_message' => $transferResult->errorMessage,
                     'paid_at' => $transferResult->status === PayoutAttemptStatus::Succeeded
@@ -261,23 +260,5 @@ final readonly class ProcessCashbackPayment
                 'support' => $supportRequest,
             ];
         });
-    }
-
-    private function rewardStatusForAttempt(PayoutAttemptStatus $status): CashbackRewardStatus
-    {
-        return match ($status) {
-            PayoutAttemptStatus::Started => throw new LogicException(
-                'A transfer gateway cannot complete a payout attempt as started.',
-            ),
-            PayoutAttemptStatus::Ambiguous => CashbackRewardStatus::Processing,
-            PayoutAttemptStatus::Pending => CashbackRewardStatus::Pending,
-            PayoutAttemptStatus::Succeeded => CashbackRewardStatus::Paid,
-            PayoutAttemptStatus::InsufficientFunds => CashbackRewardStatus::AwaitingFunds,
-            PayoutAttemptStatus::RetryableRejection => CashbackRewardStatus::RequiresAttention,
-            PayoutAttemptStatus::PermanentRejection,
-            PayoutAttemptStatus::OtpRequired,
-            PayoutAttemptStatus::Failed,
-            PayoutAttemptStatus::Reversed => CashbackRewardStatus::RequiresAttention,
-        };
     }
 }

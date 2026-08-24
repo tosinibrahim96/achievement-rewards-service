@@ -56,9 +56,9 @@ final readonly class RegisterPayoutAccount
         }
 
         /*
-         * This per-user lock covers the provider call and local replacement so
-         * two requests cannot create competing recipients for the same customer.
-         * A database transaction alone cannot lock or roll back provider work.
+         * Hold one lock per user while we call the provider and replace the saved
+         * account. This stops two requests from creating different recipients for
+         * one user. A database transaction cannot control or undo a provider call.
          */
         $lock = Cache::lock("payout-account:user:{$user->id}", $this->lockLeaseSeconds);
 
@@ -95,8 +95,8 @@ final readonly class RegisterPayoutAccount
         try {
             return DB::transaction(function () use ($user, $createdRecipient): PayoutAccountRegistrationResult {
                 /*
-                 * The user row is the lock anchor when no payout-account row exists.
-                 * PayoutAccountVerified waits for this transaction to commit.
+                 * Lock the user row because a payout account row may not exist yet.
+                 * Send PayoutAccountVerified only after this transaction commits.
                  */
                 User::query()
                     ->whereKey($user->id)
@@ -138,8 +138,8 @@ final readonly class RegisterPayoutAccount
     private function isRecipientCodeConflict(UniqueConstraintViolationException $exception): bool
     {
         /*
-         * PDO errorInfo uses index 0 for SQLSTATE, 1 for the driver code, and
-         * 2 for the driver message that contains PostgreSQL's constraint name.
+         * PDO stores the database error message at index 2. PostgreSQL includes
+         * the constraint name in that message.
          */
         $driverMessage = $exception->errorInfo[self::DRIVER_ERROR_MESSAGE_INDEX] ?? null;
 
@@ -169,8 +169,8 @@ final readonly class RegisterPayoutAccount
             report($exception);
         } catch (Throwable) {
             /*
-             * The account is already committed. A reporting failure must not
-             * change the successful registration returned to the customer.
+             * The account is already saved, so another reporting failure must not
+             * turn this into a failed registration.
              */
         }
     }

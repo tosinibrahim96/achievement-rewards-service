@@ -105,8 +105,6 @@ it('marks raw and provider-identity callback values at fallible boundaries', fun
         [HandlePaystackWebhook::class, 'callbackMatchesPayment', 'reward'],
         [HandlePaystackWebhook::class, 'callbackMatchesPayment', 'attempt'],
         [HandlePaystackWebhook::class, 'callbackMatchesPayment', 'callback'],
-        [HandlePaystackWebhook::class, 'rewardAndAttemptStatusesMatch', 'reward'],
-        [HandlePaystackWebhook::class, 'rewardAndAttemptStatusesMatch', 'attempt'],
         [HandlePaystackWebhook::class, 'saveReceiptResult', 'receipt'],
         [HandlePaystackWebhook::class, 'decodeJsonObject', 'rawBody'],
         [HandlePaystackWebhook::class, 'readProperty', 'object'],

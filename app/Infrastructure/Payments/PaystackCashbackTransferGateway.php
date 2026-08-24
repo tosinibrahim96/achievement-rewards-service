@@ -107,8 +107,8 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         }
 
         /*
-         * Paystack says the operation succeeded even though HTTP disagrees. A
-         * retry could duplicate a transfer, so this cannot be called a rejection.
+         * Paystack's body says success but its HTTP status does not. Retrying might
+         * send the money twice, so treat the result as unknown.
          */
         if ($response->operationSucceeded() === true) {
             return $this->ambiguousResponse(
@@ -131,8 +131,8 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
 
         if ($response->operationSucceeded() === false && $this->isTransferNotFound($response)) {
             /*
-             * Only the known 404, false operation result, and absent data together
-             * prove no transfer was found. Contradictory data remains ambiguous.
+             * A 404 means "not found" only when Paystack also says failure and
+             * returns no transfer data. Conflicting data makes the result unknown.
              */
             if ($response->data() !== null) {
                 return new CashbackTransferVerification(
@@ -204,8 +204,8 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         };
 
         /*
-         * A known lifecycle state without a transfer identity is still unsafe:
-         * retrying could create a duplicate that cannot be tied to this response.
+         * Without a transfer code, we cannot tell whether retrying would pay twice.
+         * Treat the result as unknown.
          */
         if ($attemptStatus !== PayoutAttemptStatus::Ambiguous && $transferCode === null) {
             return $this->ambiguousResponse(
@@ -269,8 +269,8 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         #[SensitiveParameter] PaystackResponse $response,
     ): CashbackTransferResult {
         /*
-         * Response data may describe a transfer that Paystack created despite an
-         * error envelope. Only a data-free rejection may enter the safe mappings.
+         * An error response can still describe a transfer Paystack created. Treat
+         * a rejection as safe only when there is no transfer data.
          */
         if ($response->data() !== null) {
             return $this->ambiguousResponse(

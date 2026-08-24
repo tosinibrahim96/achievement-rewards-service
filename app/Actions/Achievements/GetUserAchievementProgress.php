@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Actions\Achievements;
 
+use App\Data\Achievements\AchievementProgressRow;
 use App\Data\Achievements\UserAchievementProgress;
 use App\Models\Badge;
 use App\Models\User;
@@ -11,28 +12,17 @@ use Illuminate\Database\Query\Builder;
 use Illuminate\Database\Query\JoinClause;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
+use stdClass;
+use UnexpectedValueException;
 
-/**
- * @phpstan-type ProgressAchievementRow object{
- *     id: int,
- *     achievement_group_id: int,
- *     name: string,
- *     is_active: bool,
- *     group_is_active: bool,
- *     user_achievement_id: int|null
- * }
- * @phpstan-type ProgressAchievementNames array{
- *     unlocked: list<string>,
- *     next: list<string>
- * }
- */
 final readonly class GetUserAchievementProgress
 {
     public function handle(User $user): UserAchievementProgress
     {
         /*
-         * Read the badge first. If another worker saves progress between queries,
-         * this keeps the supported result: newer achievements with an older badge.
+         * Read the badge first. If an unlock happens between queries, we may show
+         * new achievements with the previous badge, but never a new badge before
+         * the achievements that earned it.
          */
         $currentBadge = $this->currentBadgeFor($user);
         $achievementNames = $this->achievementNames(
@@ -66,20 +56,19 @@ final readonly class GetUserAchievementProgress
             ->first();
     }
 
-    /** @return Collection<int, ProgressAchievementRow> */
+    /** @return Collection<int, AchievementProgressRow> */
     private function achievementRowsFor(User $user): Collection
     {
         /*
-         * UserAchievement rows are audit history, while this response needs the
-         * achievement definitions. This left join adds only an unlock marker and
-         * avoids loading award models and their relationships.
+         * Start with achievement definitions because the response needs their
+         * names. The left join only marks the ones this user unlocked; it does not
+         * load full unlock records and their related models.
          *
-         * Earned definitions remain visible after they are disabled. Unearned
-         * suggestions require both the group and definition to still be active.
-         * The grouped OR keeps both rules in one ordered database read.
+         * Keep unlocked achievements visible even if disabled. Suggest only
+         * active achievements from active groups. One query returns the rows used
+         * for both lists.
          */
-        /** @var Collection<int, ProgressAchievementRow> $rows */
-        $rows = DB::table('achievements')
+        return DB::table('achievements')
             ->join(
                 'achievement_groups',
                 'achievement_groups.id',
@@ -114,37 +103,68 @@ final readonly class GetUserAchievementProgress
                 'achievements.is_active',
                 'achievement_groups.is_active as group_is_active',
                 'user_achievements.id as user_achievement_id',
-            ]);
+            ])
+            ->map(
+                fn (stdClass $row): AchievementProgressRow => $this->makeAchievementRow($row),
+            );
+    }
 
-        return $rows;
+    private function makeAchievementRow(stdClass $row): AchievementProgressRow
+    {
+        /*
+         * The query builder returns objects with no declared property types. Check
+         * each value here before using it.
+         */
+        $groupId = $row->achievement_group_id;
+        $name = $row->name;
+        $isActive = $row->is_active;
+        $groupIsActive = $row->group_is_active;
+        $userAchievementId = $row->user_achievement_id;
+
+        if (! is_int($groupId)
+            || ! is_string($name)
+            || ! is_bool($isActive)
+            || ! is_bool($groupIsActive)
+            || (! is_int($userAchievementId) && $userAchievementId !== null)) {
+            throw new UnexpectedValueException(
+                'The achievement progress query returned an unexpected row.',
+            );
+        }
+
+        return new AchievementProgressRow(
+            groupId: $groupId,
+            name: $name,
+            isActive: $isActive,
+            groupIsActive: $groupIsActive,
+            isUnlocked: $userAchievementId !== null,
+        );
     }
 
     /**
-     * @param  Collection<int, ProgressAchievementRow>  $achievementRows
-     * @return ProgressAchievementNames
+     * @param  Collection<int, AchievementProgressRow>  $achievementRows
+     * @return array{unlocked: list<string>, next: list<string>}
      */
     private function achievementNames(Collection $achievementRows): array
     {
         $unlockedNames = [];
         $nextNames = [];
-        /** @var array<int, true> $groupsWithNextAchievement */
         $groupsWithNextAchievement = [];
 
         foreach ($achievementRows as $achievement) {
-            if ($achievement->user_achievement_id !== null) {
+            if ($achievement->isUnlocked) {
                 $unlockedNames[] = $achievement->name;
 
                 continue;
             }
 
-            if (! $achievement->is_active
-                || ! $achievement->group_is_active
-                || isset($groupsWithNextAchievement[$achievement->achievement_group_id])) {
+            if (! $achievement->isActive
+                || ! $achievement->groupIsActive
+                || isset($groupsWithNextAchievement[$achievement->groupId])) {
                 continue;
             }
 
             $nextNames[] = $achievement->name;
-            $groupsWithNextAchievement[$achievement->achievement_group_id] = true;
+            $groupsWithNextAchievement[$achievement->groupId] = true;
         }
 
         return [

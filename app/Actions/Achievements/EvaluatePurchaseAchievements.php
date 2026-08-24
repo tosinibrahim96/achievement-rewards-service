@@ -39,8 +39,8 @@ final readonly class EvaluatePurchaseAchievements
                 $metric = $group->metric->value;
 
                 /*
-                 * More than one group may use the same metric. Its calculator can
-                 * scan the user's purchases, so calculate it once per evaluation.
+                 * Calculating a metric reads the user's purchases. Several groups
+                 * can use the same metric, so calculate it once.
                  */
                 if (! array_key_exists($metric, $progressByMetric)) {
                     $progressByMetric[$metric] = $this->progressRegistry
@@ -78,8 +78,8 @@ final readonly class EvaluatePurchaseAchievements
         ];
 
         /*
-         * Register before unlocking so a later event failure cannot skip this log.
-         * Capture the names by reference so the callback sees the completed list.
+         * Set up this after-commit log before sending unlock events so an event
+         * failure cannot skip it. The callback reads the final list after commit.
          */
         DB::afterCommit(function () use ($purchaseDetails, &$unlockedAchievementNames): void {
             $logDetails = [
@@ -105,8 +105,8 @@ final readonly class EvaluatePurchaseAchievements
             report($exception);
         } catch (Throwable) {
             /*
-             * The achievement changes are already committed. A reporting failure
-             * must not change the result returned by the business workflow.
+             * The achievement changes are already saved, so a reporting failure
+             * must not change the result.
              */
         }
     }

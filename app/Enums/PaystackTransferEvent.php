@@ -27,4 +27,25 @@ enum PaystackTransferEvent: string
             self::Reversed => PayoutAttemptStatus::Reversed,
         };
     }
+
+    public function canChangeAttemptFrom(PayoutAttemptStatus $status): bool
+    {
+        /*
+         * Started, Ambiguous, Pending, and OtpRequired do not have a final result,
+         * so any final callback may change them. A successful payment may only be
+         * reversed. Later callbacks cannot change any other result.
+         */
+        return match ($status) {
+            PayoutAttemptStatus::Started,
+            PayoutAttemptStatus::Ambiguous,
+            PayoutAttemptStatus::Pending,
+            PayoutAttemptStatus::OtpRequired => true,
+            PayoutAttemptStatus::Succeeded => $this === self::Reversed,
+            PayoutAttemptStatus::InsufficientFunds,
+            PayoutAttemptStatus::RetryableRejection,
+            PayoutAttemptStatus::PermanentRejection,
+            PayoutAttemptStatus::Failed,
+            PayoutAttemptStatus::Reversed => false,
+        };
+    }
 }
