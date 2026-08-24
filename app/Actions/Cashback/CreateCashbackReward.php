@@ -10,9 +10,11 @@ use App\Models\CashbackReward;
 use App\Models\PayoutAccount;
 use App\Models\User;
 use App\Models\UserBadge;
+use App\Notifications\CashbackRewardNeedsPayoutAccount;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use LogicException;
+use Throwable;
 
 final readonly class CreateCashbackReward
 {
@@ -40,9 +42,12 @@ final readonly class CreateCashbackReward
         }
 
         // Wait for payout account changes before choosing the reward status.
-        User::query()->whereKey($userBadge->user_id)->lockForUpdate()->firstOrFail();
+        $user = User::query()
+            ->whereKey($userBadge->user_id)
+            ->lockForUpdate()
+            ->firstOrFail();
 
-        return CashbackReward::query()->createOrFirst(
+        $reward = CashbackReward::query()->createOrFirst(
             ['user_badge_id' => $userBadge->id],
             [
                 'user_id' => $userBadge->user_id,
@@ -53,6 +58,37 @@ final readonly class CreateCashbackReward
                 'correlation_id' => $userBadge->correlation_id,
             ],
         );
+
+        if ($reward->wasRecentlyCreated
+            && $reward->status === CashbackRewardStatus::AwaitingPayoutAccount) {
+            $this->queueNotificationAfterCommit($user, new CashbackRewardNeedsPayoutAccount(
+                badgeName: $userBadge->badge()->firstOrFail()->name,
+                amountMinor: $reward->amount_minor,
+                currency: $reward->currency,
+            ));
+        }
+
+        return $reward;
+    }
+
+    private function queueNotificationAfterCommit(
+        User $user,
+        CashbackRewardNeedsPayoutAccount $notification,
+    ): void {
+        DB::afterCommit(function () use ($user, $notification): void {
+            try {
+                $user->notify($notification);
+            } catch (Throwable $exception) {
+                try {
+                    report($exception);
+                } catch (Throwable) {
+                    /*
+                     * The reward is already saved. Mail infrastructure must not
+                     * stop later BadgeUnlocked and logging callbacks.
+                     */
+                }
+            }
+        });
     }
 
     private function startingStatusFor(int $userId): CashbackRewardStatus
