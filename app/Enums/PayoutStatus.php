@@ -14,8 +14,8 @@ enum PayoutStatus: string
     case Pending = 'pending';
     case Succeeded = 'succeeded';
     case InsufficientFunds = 'insufficient_funds';
-    case RetryableRejection = 'retryable_rejection';
-    case PermanentRejection = 'permanent_rejection';
+    case RateLimited = 'rate_limited';
+    case Rejected = 'rejected';
     case OtpRequired = 'otp_required';
     case Failed = 'failed';
     case Reversed = 'reversed';

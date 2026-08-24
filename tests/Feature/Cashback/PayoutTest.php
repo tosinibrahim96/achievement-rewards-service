@@ -3,7 +3,6 @@
 declare(strict_types=1);
 
 use App\Enums\CashbackRewardStatus;
-use App\Enums\PaymentProvider;
 use App\Enums\PayoutStatus;
 use App\Models\CashbackReward;
 use App\Models\Payout;
@@ -18,29 +17,38 @@ use Illuminate\Support\Facades\Schema;
 
 uses(DatabaseMigrations::class);
 
-it('adds nullable provider and balance observations without rewriting reward defaults', function (): void {
-    $reward = CashbackReward::factory()->create();
+it('stores provider balance observations only on the payout', function (): void {
+    $observedAt = CarbonImmutable::parse('2026-08-23T01:30:00Z');
+    $reward = CashbackReward::factory()->create([
+        'status' => CashbackRewardStatus::AwaitingFunds,
+    ]);
+    $payout = Payout::factory()->create([
+        'cashback_reward_id' => $reward->id,
+        'status' => PayoutStatus::InsufficientFunds,
+        'provider_error_code' => 'insufficient_funds',
+        'observed_balance_minor' => 0,
+        'balance_observed_at' => $observedAt,
+        'started_at' => $observedAt->subSecond(),
+        'first_result_at' => $observedAt,
+    ]);
 
-    expect(Schema::getColumnListing('cashback_rewards'))->toContain(
+    expect(Schema::getColumnListing('cashback_rewards'))->not->toContain(
         'provider',
+        'last_attempted_at',
+        'last_error_code',
+        'last_error_message',
         'last_observed_balance_minor',
         'balance_observed_at',
     )
-        ->and($reward->provider)->toBeNull()
-        ->and($reward->last_observed_balance_minor)->toBeNull()
-        ->and($reward->balance_observed_at)->toBeNull();
-
-    $observedAt = CarbonImmutable::parse('2026-08-23T01:30:00Z');
-    $reward->update([
-        'provider' => PaymentProvider::Fake,
-        'last_observed_balance_minor' => 0,
-        'balance_observed_at' => $observedAt,
-    ]);
-    $reward->refresh();
-
-    expect($reward->provider)->toBe(PaymentProvider::Fake)
-        ->and($reward->last_observed_balance_minor)->toBe(0)
-        ->and($reward->balance_observed_at?->equalTo($observedAt))->toBeTrue();
+        ->and(Schema::getColumnListing('payouts'))->toContain(
+            'observed_balance_minor',
+            'balance_observed_at',
+            'first_result_at',
+        )
+        ->not->toContain('completed_at')
+        ->and($payout->observed_balance_minor)->toBe(0)
+        ->and($payout->balance_observed_at?->equalTo($observedAt))->toBeTrue()
+        ->and($payout->first_result_at?->equalTo($observedAt))->toBeTrue();
 });
 
 it('creates a coherent durable payout with typed relationships and casts', function (): void {
@@ -49,7 +57,6 @@ it('creates a coherent durable payout with typed relationships and casts', funct
     $account = $payout->payoutAccount;
 
     expect($reward->status)->toBe(CashbackRewardStatus::Processing)
-        ->and($reward->provider)->toBe(PaymentProvider::Fake)
         ->and($payout->provider)->toBe($account->provider)
         ->and($payout->provider_reference)->toBe($reward->provider_reference)
         ->and($payout->provider_recipient_code)->toBe($account->provider_recipient_code)
@@ -57,7 +64,8 @@ it('creates a coherent durable payout with typed relationships and casts', funct
         ->and($payout->currency)->toBe($reward->currency)
         ->and($payout->status)->toBe(PayoutStatus::Started)
         ->and($payout->started_at)->toBeInstanceOf(CarbonImmutable::class)
-        ->and($payout->completed_at)->toBeNull()
+        ->and($payout->balance_observed_at)->toBeNull()
+        ->and($payout->first_result_at)->toBeNull()
         ->and($payout->succeeded_at)->toBeNull()
         ->and($payout->reversed_at)->toBeNull()
         ->and($payout->support_alert_requested_at)->toBeNull()
@@ -121,6 +129,21 @@ it('enforces one payout per reward', function (): void {
         ->toBe(1);
 });
 
+it('accepts only the matching rate limited payout status and error code', function (): void {
+    $reward = CashbackReward::factory()->create([
+        'status' => CashbackRewardStatus::RequiresAttention,
+    ]);
+    $payout = Payout::factory()->create([
+        'cashback_reward_id' => $reward->id,
+        'status' => PayoutStatus::RateLimited,
+        'provider_error_code' => 'rate_limited',
+        'first_result_at' => now(),
+    ]);
+
+    expect($payout->status)->toBe(PayoutStatus::RateLimited)
+        ->and($payout->provider_error_code)->toBe('rate_limited');
+});
+
 it('enforces payout invariants in postgres', function (array $invalid): void {
     $payout = Payout::factory()->create();
 
@@ -131,47 +154,61 @@ it('enforces payout invariants in postgres', function (array $invalid): void {
     'non-positive amount' => [['amount_minor' => 0]],
     'unsupported currency' => [['currency' => 'USD']],
     'unknown factual state' => [['status' => 'lost']],
-    'started payout cannot be completed' => [['completed_at' => now()]],
-    'pending requires transfer code and completion' => [[
-        'status' => 'pending',
-        'completed_at' => now(),
+    'started payout cannot have a first result' => [['first_result_at' => now()]],
+    'non-started payout requires a first result' => [[
+        'status' => 'rejected',
     ]],
-    'permanent rejection cannot have transfer code' => [[
-        'status' => 'permanent_rejection',
+    'pending requires transfer code' => [[
+        'status' => 'pending',
+        'first_result_at' => now(),
+    ]],
+    'rejected payout cannot have transfer code' => [[
+        'status' => 'rejected',
         'provider_transfer_code' => 'TRF_impossible',
-        'completed_at' => now(),
+        'first_result_at' => now(),
     ]],
     'ambiguous payout cannot have an empty transfer code' => [[
         'status' => 'ambiguous',
         'provider_transfer_code' => '',
-        'completed_at' => now(),
+        'first_result_at' => now(),
     ]],
     'success requires a success timestamp' => [[
         'status' => 'succeeded',
         'provider_transfer_code' => 'TRF_missing_time',
-        'completed_at' => now(),
+        'first_result_at' => now(),
     ]],
     'reversal requires a reversal timestamp' => [[
         'status' => 'reversed',
         'provider_transfer_code' => 'TRF_missing_time',
-        'completed_at' => now(),
+        'first_result_at' => now(),
+    ]],
+    'rate limited status requires the matching error code' => [[
+        'status' => 'rate_limited',
+        'first_result_at' => now(),
+    ]],
+    'rate limited error code requires the matching status' => [[
+        'status' => 'rejected',
+        'provider_error_code' => 'rate_limited',
+        'first_result_at' => now(),
     ]],
     'HTTP status below range' => [['provider_http_status' => 99]],
     'HTTP status above range' => [['provider_http_status' => 600]],
     'negative latency' => [['provider_latency_ms' => -1]],
     'negative observed balance' => [['observed_balance_minor' => -1]],
+    'balance without observation time' => [['observed_balance_minor' => 0]],
+    'observation time without balance' => [['balance_observed_at' => now()]],
 ]);
 
-it('enforces reward provider and balance observation invariants in postgres', function (array $invalid): void {
+it('rejects removed or unknown cashback reward states in postgres', function (string $status): void {
     $reward = CashbackReward::factory()->create();
 
-    expect(fn () => DB::table('cashback_rewards')->where('id', $reward->id)->update($invalid))
+    expect(fn () => DB::table('cashback_rewards')->where('id', $reward->id)->update([
+        'status' => $status,
+    ]))
         ->toThrow(QueryException::class);
 })->with([
-    'unknown provider' => [['provider' => 'unknown']],
-    'negative observed balance' => [['last_observed_balance_minor' => -1]],
-    'balance without observation time' => [['last_observed_balance_minor' => 0]],
-    'observation time without balance' => [['balance_observed_at' => now()]],
+    'removed retry state' => 'retrying',
+    'unknown state' => 'lost',
 ]);
 
 it('preserves payouts by restricting deletion of their reward and payout account', function (): void {

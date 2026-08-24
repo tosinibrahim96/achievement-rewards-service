@@ -22,9 +22,7 @@ class PayoutFactory extends Factory
     {
         return [
             'cashback_reward_id' => CashbackReward::factory()->state([
-                'provider' => PaymentProvider::Fake,
                 'status' => CashbackRewardStatus::Processing,
-                'last_attempted_at' => now(),
             ]),
             'payout_account_id' => static function (array $attributes): int {
                 $reward = self::rewardFrom($attributes);
@@ -48,11 +46,12 @@ class PayoutFactory extends Factory
             'provider_error_message' => null,
             'provider_latency_ms' => null,
             'observed_balance_minor' => null,
+            'balance_observed_at' => null,
             'succeeded_at' => null,
             'reversed_at' => null,
             'support_alert_requested_at' => null,
             'started_at' => now(),
-            'completed_at' => null,
+            'first_result_at' => null,
         ];
     }
 

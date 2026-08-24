@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
 use App\Contracts\Payments\CashbackTransferGateway;
+use App\Data\Cashback\CashbackPayoutSupportRequest;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
 use App\Data\Payments\TransferBalance;
@@ -22,10 +23,13 @@ use App\Models\User;
 use App\Models\UserBadge;
 use App\Notifications\CashbackPayoutRequiresAttention;
 use Illuminate\Contracts\Notifications\Dispatcher;
+use Illuminate\Contracts\Queue\Factory as QueueFactory;
 use Illuminate\Contracts\Queue\ShouldQueueAfterCommit;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Notifications\AnonymousNotifiable;
+use Illuminate\Notifications\SendQueuedNotifications;
 use Illuminate\Support\Facades\Context;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Notification;
 use LogicException;
@@ -91,7 +95,7 @@ beforeEach(function (): void {
 
 it('gives support the real review path for an uncertain Paystack payout', function (): void {
     expect(CashbackPayoutIssue::StatusUncertain->nextAction())->toBe(
-        'Wait for a matching callback; if none arrives, review the existing transfer in Paystack before considering another transfer.',
+        'Wait for a matching callback; if none arrives, inspect the existing transfer in Paystack and resolve the customer\'s outstanding reward.',
     );
 });
 
@@ -153,18 +157,18 @@ it('maps each unresolved initial outcome to one safe support category', function
         CashbackPayoutIssue::StatusUncertain,
         CashbackRewardStatus::Processing,
     ],
-    'temporary rejection' => [
+    'rate limited' => [
         new CashbackTransferResult(
-            status: PayoutStatus::RetryableRejection,
+            status: PayoutStatus::RateLimited,
             errorCode: CashbackTransferErrorCode::RateLimited,
             errorMessage: 'PRIVATE_PROVIDER_REASON',
         ),
-        CashbackPayoutIssue::TemporaryRejection,
+        CashbackPayoutIssue::RateLimited,
         CashbackRewardStatus::RequiresAttention,
     ],
     'human review' => [
         new CashbackTransferResult(
-            status: PayoutStatus::PermanentRejection,
+            status: PayoutStatus::Rejected,
             errorCode: CashbackTransferErrorCode::PermanentFailure,
             errorMessage: 'PRIVATE_PROVIDER_REASON',
         ),
@@ -213,7 +217,7 @@ it('requests support only once when the same payout work is delivered again', fu
 it('logs payout processing and support intent with exact safe allowlists and scoped correlation', function (): void {
     [$reward] = rewardForPayoutSupportTest();
     $result = new CashbackTransferResult(
-        status: PayoutStatus::RetryableRejection,
+        status: PayoutStatus::RateLimited,
         httpStatus: 429,
         errorCode: CashbackTransferErrorCode::RateLimited,
         errorMessage: 'PRIVATE_PROVIDER_REASON',
@@ -237,7 +241,7 @@ it('logs payout processing and support intent with exact safe allowlists and sco
             ]
                 && $context['cashback_reward_id'] === $reward->id
                 && $context['state_changed'] === true
-                && $context['payout_status'] === PayoutStatus::RetryableRejection->value
+                && $context['payout_status'] === PayoutStatus::RateLimited->value
                 && $context['reward_status'] === CashbackRewardStatus::RequiresAttention->value
                 && $context['error_code'] === CashbackTransferErrorCode::RateLimited->value
                 && $context['provider_http_status'] === 429
@@ -259,7 +263,7 @@ it('logs payout processing and support intent with exact safe allowlists and sco
                 'correlation_id',
             ]
                 && $context['cashback_reward_id'] === $reward->id
-                && $context['issue_category'] === CashbackPayoutIssue::TemporaryRejection->value
+                && $context['issue_category'] === CashbackPayoutIssue::RateLimited->value
                 && $context['correlation_id'] === $reward->correlation_id
                 && ! str_contains(json_encode($context, JSON_THROW_ON_ERROR), $reward->provider_reference)
                 && Context::get('correlation_id') === $reward->correlation_id;
@@ -303,7 +307,7 @@ it('still attempts notification when the post-commit support log fails', functio
     app()->instance(Dispatcher::class, $dispatcher);
     [$reward] = rewardForPayoutSupportTest();
     $result = new CashbackTransferResult(
-        status: PayoutStatus::PermanentRejection,
+        status: PayoutStatus::Rejected,
         errorCode: CashbackTransferErrorCode::PermanentFailure,
         errorMessage: 'A safe permanent failure.',
     );
@@ -323,4 +327,63 @@ it('requires the alert stamp to be selected while the payout row is transaction-
         LogicException::class,
         'A support request must be marked inside the payout transaction.',
     );
+});
+
+it('round trips renamed payout enums through real database queue payloads', function (): void {
+    $notifiable = (new AnonymousNotifiable)->route('mail', 'support@example.test');
+    $requests = [
+        new CashbackPayoutSupportRequest(
+            cashbackRewardId: 41,
+            payoutId: 51,
+            issue: CashbackPayoutIssue::RateLimited,
+            payoutStatus: PayoutStatus::RateLimited,
+            rewardStatus: CashbackRewardStatus::RequiresAttention,
+            errorCode: CashbackTransferErrorCode::RateLimited->value,
+            providerHttpStatus: 429,
+            correlationId: '01QUEUE_RATE_LIMITED_ROUND_TRIP',
+        ),
+        new CashbackPayoutSupportRequest(
+            cashbackRewardId: 42,
+            payoutId: 52,
+            issue: CashbackPayoutIssue::HumanReview,
+            payoutStatus: PayoutStatus::Rejected,
+            rewardStatus: CashbackRewardStatus::RequiresAttention,
+            errorCode: CashbackTransferErrorCode::PermanentFailure->value,
+            providerHttpStatus: 400,
+            correlationId: '01QUEUE_REJECTED_ROUND_TRIP',
+        ),
+    ];
+
+    foreach ($requests as $request) {
+        app(QueueFactory::class)->connection('database')->push(new SendQueuedNotifications(
+            $notifiable,
+            new CashbackPayoutRequiresAttention($request),
+            ['mail'],
+        ));
+    }
+
+    $commands = DB::table('jobs')
+        ->orderBy('id')
+        ->pluck('payload')
+        ->map(static function (string $payload): string {
+            $decoded = json_decode($payload, true, 512, JSON_THROW_ON_ERROR);
+            $command = $decoded['data']['command'] ?? null;
+
+            if (! is_string($command)) {
+                throw new RuntimeException('The database queue payload must contain a serialized command.');
+            }
+
+            return $command;
+        });
+
+    expect($commands)->toHaveCount(2)
+        ->and($commands[0])->toContain('App\\Enums\\CashbackPayoutIssue:RateLimited')
+        ->toContain('App\\Enums\\PayoutStatus:RateLimited')
+        ->not->toContain('RetryableRejection', 'TemporaryRejection')
+        ->and($commands[1])->toContain('App\\Enums\\PayoutStatus:Rejected')
+        ->not->toContain('PermanentRejection')
+        ->and(unserialize($commands[0], ['allowed_classes' => true]))
+        ->toBeInstanceOf(SendQueuedNotifications::class)
+        ->and(unserialize($commands[1], ['allowed_classes' => true]))
+        ->toBeInstanceOf(SendQueuedNotifications::class);
 });

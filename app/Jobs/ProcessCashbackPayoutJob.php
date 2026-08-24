@@ -45,7 +45,8 @@ final class ProcessCashbackPayoutJob implements ShouldBeUnique, ShouldQueue
     {
         /*
          * If another job is handling this reward, delete this duplicate instead of
-         * retrying it. The database state still decides whether a payout may start.
+         * releasing it back to the queue. The database state still decides whether
+         * a payout may start.
          */
         return [
             (new WithoutOverlapping("reward:{$this->cashbackRewardId}"))

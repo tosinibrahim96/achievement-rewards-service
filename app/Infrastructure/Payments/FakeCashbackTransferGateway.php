@@ -68,7 +68,7 @@ final readonly class FakeCashbackTransferGateway implements CashbackTransferGate
                 observedBalanceMinor: 0,
             ),
             'permanent_failure' => new CashbackTransferResult(
-                status: PayoutStatus::PermanentRejection,
+                status: PayoutStatus::Rejected,
                 errorCode: CashbackTransferErrorCode::PermanentFailure,
                 errorMessage: 'The fake provider rejected the transfer.',
                 latencyMs: 0,

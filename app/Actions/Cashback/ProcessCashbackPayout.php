@@ -56,7 +56,7 @@ final readonly class ProcessCashbackPayout
             }
 
             $transferResult = new CashbackTransferResult(
-                status: PayoutStatus::PermanentRejection,
+                status: PayoutStatus::Rejected,
                 errorCode: CashbackTransferErrorCode::ProviderUnavailable,
                 errorMessage: 'The persisted payment provider is unavailable.',
             );
@@ -83,17 +83,17 @@ final readonly class ProcessCashbackPayout
         $reward = $completion['reward'];
 
         try {
-            Context::scope(function () use ($claim, $transferResult, $payout, $reward, $completion): void {
+            Context::scope(function () use ($payout, $reward, $completion): void {
                 Log::info('cashback.payout.processed', [
                     'cashback_reward_id' => $reward->id,
                     'payout_id' => $payout->id,
-                    'provider' => $claim->provider->value,
+                    'provider' => $payout->provider->value,
                     'state_changed' => $completion['state_changed'],
                     'payout_status' => $payout->status->value,
                     'reward_status' => $reward->status->value,
-                    'error_code' => $transferResult->errorCode?->value,
-                    'provider_http_status' => $transferResult->httpStatus,
-                    'provider_latency_ms' => $transferResult->latencyMs,
+                    'error_code' => $payout->provider_error_code,
+                    'provider_http_status' => $payout->provider_http_status,
+                    'provider_latency_ms' => $payout->provider_latency_ms,
                     'correlation_id' => $reward->correlation_id,
                 ]);
             }, ['correlation_id' => $reward->correlation_id]);
@@ -125,7 +125,6 @@ final readonly class ProcessCashbackPayout
 
             if ($reward === null
                 || $reward->status !== CashbackRewardStatus::ReadyForPayout
-                || $reward->provider !== null
                 || $reward->payout()->exists()) {
                 return null;
             }
@@ -153,13 +152,7 @@ final readonly class ProcessCashbackPayout
                 'started_at' => $startedAt,
             ]);
 
-            $reward->fill([
-                'provider' => $payoutAccount->provider,
-                'status' => CashbackRewardStatus::Processing,
-                'last_attempted_at' => $startedAt,
-                'last_error_code' => null,
-                'last_error_message' => null,
-            ])->save();
+            $reward->update(['status' => CashbackRewardStatus::Processing]);
 
             return new CashbackPayoutClaim(
                 cashbackRewardId: $reward->id,
@@ -215,7 +208,7 @@ final readonly class ProcessCashbackPayout
              */
             if ($reward->status === CashbackRewardStatus::Processing
                 && $payout->status === PayoutStatus::Started) {
-                $completedAt = now();
+                $firstResultAt = now();
                 $payout->fill([
                     'status' => $transferResult->status,
                     'provider_transfer_code' => $transferResult->transferCode,
@@ -224,30 +217,24 @@ final readonly class ProcessCashbackPayout
                     'provider_error_message' => $transferResult->errorMessage,
                     'provider_latency_ms' => $transferResult->latencyMs,
                     'observed_balance_minor' => $transferResult->observedBalanceMinor,
+                    'balance_observed_at' => $transferResult->observedBalanceMinor === null
+                        ? null
+                        : $firstResultAt,
                     'succeeded_at' => $transferResult->status === PayoutStatus::Succeeded
-                        ? $completedAt
+                        ? $firstResultAt
                         : null,
                     'reversed_at' => $transferResult->status === PayoutStatus::Reversed
-                        ? $completedAt
+                        ? $firstResultAt
                         : null,
-                    'completed_at' => $completedAt,
+                    'first_result_at' => $firstResultAt,
                 ]);
 
-                $rewardValues = [
+                $reward->fill([
                     'status' => CashbackRewardStatus::forPayout($transferResult->status),
-                    'last_error_code' => $transferResult->errorCode?->value,
-                    'last_error_message' => $transferResult->errorMessage,
                     'paid_at' => $transferResult->status === PayoutStatus::Succeeded
-                        ? $completedAt
+                        ? $firstResultAt
                         : null,
-                ];
-
-                if ($transferResult->observedBalanceMinor !== null) {
-                    $rewardValues['last_observed_balance_minor'] = $transferResult->observedBalanceMinor;
-                    $rewardValues['balance_observed_at'] = $completedAt;
-                }
-
-                $reward->fill($rewardValues);
+                ]);
                 $supportRequest = $this->requestPayoutSupport->markWhileLocked($reward, $payout);
                 $payout->save();
                 $reward->save();

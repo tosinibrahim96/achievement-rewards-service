@@ -4,9 +4,11 @@ declare(strict_types=1);
 
 use App\Enums\CashbackRewardStatus;
 use App\Enums\Currency;
+use App\Enums\PayoutStatus;
 use App\Enums\TokenAbility;
 use App\Models\Badge;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
 use App\Models\User;
 use App\Models\UserBadge;
@@ -135,8 +137,6 @@ it('returns the exact safe owner-scoped reward contract in deterministic order',
         'status' => CashbackRewardStatus::Pending,
         'created_at' => $tiedCreatedAt,
         'updated_at' => CarbonImmutable::parse('2026-08-22T18:31:00Z'),
-        'last_error_code' => 'private-first-error',
-        'last_error_message' => 'private first diagnostic',
     ]);
     $secondTiedReward = createCashbackRewardFor($customer, 'Advanced', [
         'amount_minor' => 30_000,
@@ -144,8 +144,6 @@ it('returns the exact safe owner-scoped reward contract in deterministic order',
         'created_at' => $tiedCreatedAt,
         'updated_at' => CarbonImmutable::parse('2026-08-22T18:32:00Z'),
         'paid_at' => CarbonImmutable::parse('2026-08-22T18:31:30Z'),
-        'last_error_code' => 'private-second-error',
-        'last_error_message' => 'private second diagnostic',
     ]);
     $olderReward = createCashbackRewardFor($customer, 'Beginner', [
         'amount_minor' => 30_000,
@@ -155,7 +153,42 @@ it('returns the exact safe owner-scoped reward contract in deterministic order',
     ]);
     $otherReward = createCashbackRewardFor($otherCustomer, 'Private Other Badge', [
         'created_at' => CarbonImmutable::parse('2026-08-23T11:00:00Z'),
-        'last_error_message' => 'other customer diagnostic',
+    ]);
+    $firstResultAt = CarbonImmutable::parse('2026-08-22T18:30:30Z');
+    Payout::factory()->create([
+        'cashback_reward_id' => $firstTiedReward->id,
+        'status' => PayoutStatus::Pending,
+        'provider_transfer_code' => 'TRF_PRIVATE_FIRST',
+        'provider_error_code' => 'private-first-error',
+        'provider_error_message' => 'private first diagnostic',
+        'provider_recipient_code' => 'RCP_PRIVATE_FIRST',
+        'first_result_at' => $firstResultAt,
+    ]);
+    Payout::factory()->create([
+        'cashback_reward_id' => $secondTiedReward->id,
+        'status' => PayoutStatus::Succeeded,
+        'provider_transfer_code' => 'TRF_PRIVATE_SECOND',
+        'provider_error_code' => 'private-second-error',
+        'provider_error_message' => 'private second diagnostic',
+        'provider_recipient_code' => 'RCP_PRIVATE_SECOND',
+        'succeeded_at' => $firstResultAt,
+        'first_result_at' => $firstResultAt,
+    ]);
+    Payout::factory()->create([
+        'cashback_reward_id' => $olderReward->id,
+        'status' => PayoutStatus::InsufficientFunds,
+        'provider_error_code' => 'private-balance-error',
+        'provider_error_message' => 'private balance diagnostic',
+        'observed_balance_minor' => 123_456,
+        'balance_observed_at' => $firstResultAt,
+        'first_result_at' => $firstResultAt,
+    ]);
+    Payout::factory()->create([
+        'cashback_reward_id' => $otherReward->id,
+        'status' => PayoutStatus::Rejected,
+        'provider_error_code' => 'other-private-error',
+        'provider_error_message' => 'other customer diagnostic',
+        'first_result_at' => $firstResultAt,
     ]);
 
     $response = $this->getJson(
@@ -227,7 +260,14 @@ it('returns the exact safe owner-scoped reward contract in deterministic order',
         ->and($serialized)->not->toContain('private first diagnostic')
         ->and($serialized)->not->toContain('private-second-error')
         ->and($serialized)->not->toContain('private second diagnostic')
+        ->and($serialized)->not->toContain('TRF_PRIVATE_FIRST')
+        ->and($serialized)->not->toContain('TRF_PRIVATE_SECOND')
+        ->and($serialized)->not->toContain('RCP_PRIVATE_FIRST')
+        ->and($serialized)->not->toContain('RCP_PRIVATE_SECOND')
+        ->and($serialized)->not->toContain('private-balance-error')
+        ->and($serialized)->not->toContain('private balance diagnostic')
         ->and($serialized)->not->toContain('Private Other Badge')
+        ->and($serialized)->not->toContain('other-private-error')
         ->and($serialized)->not->toContain('other customer diagnostic')
         ->and(collect($response->json('data'))->pluck('id')->all())->not->toContain($otherReward->id);
 });

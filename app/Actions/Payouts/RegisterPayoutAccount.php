@@ -143,7 +143,6 @@ final readonly class RegisterPayoutAccount
         CashbackReward::query()
             ->where('user_id', $userId)
             ->where('status', CashbackRewardStatus::AwaitingPayoutAccount)
-            ->whereNull('provider')
             ->whereDoesntHave('payout')
             ->update(['status' => CashbackRewardStatus::ReadyForPayout]);
     }

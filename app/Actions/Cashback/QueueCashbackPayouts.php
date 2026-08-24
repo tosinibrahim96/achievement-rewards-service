@@ -40,7 +40,6 @@ final readonly class QueueCashbackPayouts
         $query = CashbackReward::query()
             ->select('cashback_rewards.id')
             ->where('cashback_rewards.status', CashbackRewardStatus::ReadyForPayout)
-            ->whereNull('cashback_rewards.provider')
             ->whereDoesntHave('payout')
             ->whereHas(
                 'user.payoutAccount',

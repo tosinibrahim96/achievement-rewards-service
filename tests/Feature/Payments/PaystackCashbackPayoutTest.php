@@ -90,8 +90,7 @@ it('persists real-adapter outcomes against the Paystack-owned payout without usi
         ->and($payout?->payout_account_id)->toBe($account->id)
         ->and($payout?->provider_recipient_code)->toBe('RCP_paystack_processor')
         ->and($payout?->provider_error_code)->toBe($errorCode)
-        ->and($payout?->completed_at)->not->toBeNull()
-        ->and($reward->provider)->toBe(PaymentProvider::Paystack)
+        ->and($payout?->first_result_at)->not->toBeNull()
         ->and($reward->status)->toBe($rewardStatus)
         ->and(Payout::query()->whereBelongsTo($reward, 'cashbackReward')->count())->toBe(1);
 
@@ -106,7 +105,7 @@ it('persists real-adapter outcomes against the Paystack-owned payout without usi
     'live-like pending' => ['pending', PayoutStatus::Pending, CashbackRewardStatus::Pending, null],
     'unexpected OTP' => ['otp', PayoutStatus::OtpRequired, CashbackRewardStatus::RequiresAttention, 'otp_required'],
     'insufficient funds' => ['insufficient', PayoutStatus::InsufficientFunds, CashbackRewardStatus::AwaitingFunds, 'insufficient_funds'],
-    'rate limited needs attention without a retry worker' => ['rate_limit', PayoutStatus::RetryableRejection, CashbackRewardStatus::RequiresAttention, 'rate_limited'],
+    'rate limited needs attention' => ['rate_limit', PayoutStatus::RateLimited, CashbackRewardStatus::RequiresAttention, 'rate_limited'],
     'timeout ambiguity' => ['timeout', PayoutStatus::Ambiguous, CashbackRewardStatus::Processing, 'provider_timeout'],
 ]);
 
@@ -119,9 +118,8 @@ it('does not fall back to fake when a persisted Paystack obligation has no crede
     $reward->refresh();
 
     expect($payout?->provider)->toBe(PaymentProvider::Paystack)
-        ->and($payout?->status)->toBe(PayoutStatus::PermanentRejection)
+        ->and($payout?->status)->toBe(PayoutStatus::Rejected)
         ->and($payout?->provider_error_code)->toBe('provider_unavailable')
-        ->and($reward->provider)->toBe(PaymentProvider::Paystack)
         ->and($reward->status)->toBe(CashbackRewardStatus::RequiresAttention);
     Http::assertNothingSent();
 });

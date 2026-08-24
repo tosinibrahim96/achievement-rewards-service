@@ -30,11 +30,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string|null $provider_error_message
  * @property int|null $provider_latency_ms
  * @property int|null $observed_balance_minor
+ * @property CarbonImmutable|null $balance_observed_at
  * @property CarbonImmutable|null $succeeded_at
  * @property CarbonImmutable|null $reversed_at
  * @property CarbonImmutable|null $support_alert_requested_at
  * @property CarbonImmutable $started_at
- * @property CarbonImmutable|null $completed_at
+ * @property CarbonImmutable|null $first_result_at
  * @property-read CashbackReward $cashbackReward
  * @property-read PayoutAccount $payoutAccount
  */
@@ -53,11 +54,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'provider_error_message',
     'provider_latency_ms',
     'observed_balance_minor',
+    'balance_observed_at',
     'succeeded_at',
     'reversed_at',
     'support_alert_requested_at',
     'started_at',
-    'completed_at',
+    'first_result_at',
 ])]
 class Payout extends Model
 {
@@ -87,11 +89,12 @@ class Payout extends Model
             'provider_http_status' => 'integer',
             'provider_latency_ms' => 'integer',
             'observed_balance_minor' => 'integer',
+            'balance_observed_at' => 'immutable_datetime',
             'succeeded_at' => 'immutable_datetime',
             'reversed_at' => 'immutable_datetime',
             'support_alert_requested_at' => 'immutable_datetime',
             'started_at' => 'immutable_datetime',
-            'completed_at' => 'immutable_datetime',
+            'first_result_at' => 'immutable_datetime',
         ];
     }
 }

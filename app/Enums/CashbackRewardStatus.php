@@ -14,7 +14,6 @@ enum CashbackRewardStatus: string
     case AwaitingFunds = 'awaiting_funds';
     case Pending = 'pending';
     case Processing = 'processing';
-    case Retrying = 'retrying';
     case Paid = 'paid';
     case RequiresAttention = 'requires_attention';
 
@@ -32,8 +31,8 @@ enum CashbackRewardStatus: string
             PayoutStatus::Pending => self::Pending,
             PayoutStatus::Succeeded => self::Paid,
             PayoutStatus::InsufficientFunds => self::AwaitingFunds,
-            PayoutStatus::RetryableRejection,
-            PayoutStatus::PermanentRejection,
+            PayoutStatus::RateLimited,
+            PayoutStatus::Rejected,
             PayoutStatus::OtpRequired,
             PayoutStatus::Failed,
             PayoutStatus::Reversed => self::RequiresAttention,

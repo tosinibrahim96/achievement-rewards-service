@@ -20,9 +20,11 @@ use App\Models\Payout;
 use App\Models\PayoutAccount;
 use App\Models\User;
 use App\Models\UserBadge;
+use Carbon\CarbonImmutable;
 use Closure;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Str;
 use LogicException;
@@ -145,7 +147,6 @@ it('commits a complete payout snapshot before provider work and does not preflig
         ->and($payout?->provider_transfer_code)->toBe('TRF_OBSERVED')
         ->and($payout?->succeeded_at)->not->toBeNull()
         ->and($payout?->reversed_at)->toBeNull()
-        ->and($reward->provider)->toBe(PaymentProvider::Fake)
         ->and($reward->status)->toBe(CashbackRewardStatus::Paid)
         ->and($reward->paid_at)->not->toBeNull();
 });
@@ -169,7 +170,7 @@ it('maps each basic fake outcome to its factual payout and obligation state', fu
     expect($payout?->status)->toBe($payoutStatus)
         ->and($reward->status)->toBe($rewardStatus)
         ->and($exists)->toBe($effectExists ? 1 : 0)
-        ->and($payout?->completed_at)->not->toBeNull();
+        ->and($payout?->first_result_at)->not->toBeNull();
 
     if ($payoutStatus === PayoutStatus::Succeeded) {
         expect($payout?->succeeded_at)->not->toBeNull()
@@ -181,8 +182,10 @@ it('maps each basic fake outcome to its factual payout and obligation state', fu
 
     if ($payoutStatus === PayoutStatus::InsufficientFunds) {
         expect($payout?->observed_balance_minor)->toBe(0)
-            ->and($reward->last_observed_balance_minor)->toBe(0)
-            ->and($reward->balance_observed_at)->not->toBeNull();
+            ->and($payout?->balance_observed_at)->not->toBeNull();
+    } else {
+        expect($payout?->observed_balance_minor)->toBeNull()
+            ->and($payout?->balance_observed_at)->toBeNull();
     }
 })->with([
     'success' => [
@@ -203,9 +206,9 @@ it('maps each basic fake outcome to its factual payout and obligation state', fu
         CashbackRewardStatus::AwaitingFunds,
         false,
     ],
-    'permanent rejection' => [
+    'rejected' => [
         'permanent_failure',
-        PayoutStatus::PermanentRejection,
+        PayoutStatus::Rejected,
         CashbackRewardStatus::RequiresAttention,
         false,
     ],
@@ -223,8 +226,6 @@ it('leaves a reward untouched when no verified payout account exists', function 
     $reward->refresh();
 
     expect($reward->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
-        ->and($reward->provider)->toBeNull()
-        ->and($reward->last_attempted_at)->toBeNull()
         ->and($reward->payout()->exists())->toBeFalse();
 });
 
@@ -267,19 +268,13 @@ it('does not claim a ready reward when its verified account is missing', functio
         ->and(Payout::query()->count())->toBe(0);
 });
 
-it('does not claim a ready reward with contradictory payout history', function (
-    string $contradiction,
-): void {
+it('does not claim a ready reward when its payout already exists', function (): void {
     [$reward, $account] = payableCashbackReward();
 
-    if ($contradiction === 'provider') {
-        $reward->update(['provider' => PaymentProvider::Fake]);
-    } else {
-        Payout::factory()->create([
-            'cashback_reward_id' => $reward->id,
-            'payout_account_id' => $account->id,
-        ]);
-    }
+    Payout::factory()->create([
+        'cashback_reward_id' => $reward->id,
+        'payout_account_id' => $account->id,
+    ]);
 
     $payoutCount = Payout::query()->where('cashback_reward_id', $reward->id)->count();
     $gateway = new InspectingCashbackTransferGateway(
@@ -295,10 +290,7 @@ it('does not claim a ready reward with contradictory payout history', function (
         ->and($gateway->initiationCalls)->toBe(0)
         ->and(Payout::query()->where('cashback_reward_id', $reward->id)->count())
         ->toBe($payoutCount);
-})->with([
-    'provider already bound' => ['provider'],
-    'payout already exists' => ['payout'],
-]);
+});
 
 it('treats duplicate processing and every non-claimable state as a no-op', function (
     CashbackRewardStatus $status,
@@ -313,7 +305,6 @@ it('treats duplicate processing and every non-claimable state as a no-op', funct
     CashbackRewardStatus::Processing,
     CashbackRewardStatus::Pending,
     CashbackRewardStatus::AwaitingFunds,
-    CashbackRewardStatus::Retrying,
     CashbackRewardStatus::Paid,
     CashbackRewardStatus::RequiresAttention,
 ]);
@@ -358,7 +349,7 @@ it('keeps the durable claim when the worker fails after the claim commit', funct
 
     expect($reward->status)->toBe(CashbackRewardStatus::Processing)
         ->and($payout->status)->toBe(PayoutStatus::Started)
-        ->and($payout->completed_at)->toBeNull()
+        ->and($payout->first_result_at)->toBeNull()
         ->and($action->handle($reward->id))->toBeNull()
         ->and(Payout::query()->count())->toBe(1);
 });
@@ -373,12 +364,12 @@ it('maps an unavailable persisted provider to attention without falling back', f
     $payout = $action->handle($reward->id);
     $reward->refresh();
 
-    expect($payout?->status)->toBe(PayoutStatus::PermanentRejection)
+    expect($payout?->status)->toBe(PayoutStatus::Rejected)
+        ->and($payout?->provider)->toBe(PaymentProvider::Fake)
         ->and($payout?->provider_error_code)->toBe('provider_unavailable')
+        ->and($payout?->provider_error_message)->toBe('The persisted payment provider is unavailable.')
         ->and($payout?->provider_transfer_code)->toBeNull()
-        ->and($reward->provider)->toBe(PaymentProvider::Fake)
-        ->and($reward->status)->toBe(CashbackRewardStatus::RequiresAttention)
-        ->and($reward->last_error_message)->toBe('The persisted payment provider is unavailable.');
+        ->and($reward->status)->toBe(CashbackRewardStatus::RequiresAttention);
 });
 
 it('keeps a registered gateway failure discoverable instead of calling it a conclusive rejection', function (): void {
@@ -402,9 +393,9 @@ it('keeps a registered gateway failure discoverable instead of calling it a conc
     $payout = Payout::query()->sole();
 
     expect($reward->status)->toBe(CashbackRewardStatus::Processing)
-        ->and($reward->last_error_code)->toBeNull()
         ->and($payout->status)->toBe(PayoutStatus::Started)
-        ->and($payout->completed_at)->toBeNull();
+        ->and($payout->provider_error_code)->toBeNull()
+        ->and($payout->first_result_at)->toBeNull();
 });
 
 it('rejects invalid fake configuration before claiming a reward', function (): void {
@@ -417,8 +408,6 @@ it('rejects invalid fake configuration before claiming a reward', function (): v
     $reward->refresh();
 
     expect($reward->status)->toBe(CashbackRewardStatus::ReadyForPayout)
-        ->and($reward->provider)->toBeNull()
-        ->and($reward->last_attempted_at)->toBeNull()
         ->and(Payout::query()->count())->toBe(0);
 });
 
@@ -454,24 +443,36 @@ it('does not blindly reinitiate after a fake effect exists but its response is l
 
 it('does not overwrite a newer durable lifecycle fact with an older provider response', function (): void {
     [$reward] = payableCashbackReward();
+    $callbackObservedAt = CarbonImmutable::parse('2026-08-24T12:30:00Z');
+    Log::shouldReceive('info')->once()->with(
+        'cashback.payout.processed',
+        Mockery::on(fn (array $context): bool => $context['state_changed'] === false
+            && $context['payout_status'] === PayoutStatus::Succeeded->value
+            && $context['reward_status'] === CashbackRewardStatus::Paid->value
+            && $context['error_code'] === null
+            && $context['provider_http_status'] === 200
+            && $context['provider_latency_ms'] === 12),
+    );
     $gateway = new InspectingCashbackTransferGateway(
-        function (CashbackTransferRequest $request) use ($reward): void {
-            $observedAt = now();
-
+        function (CashbackTransferRequest $request) use ($callbackObservedAt, $reward): void {
             Payout::query()->where('cashback_reward_id', $reward->id)->update([
                 'status' => PayoutStatus::Succeeded,
                 'provider_transfer_code' => 'TRF_CALLBACK_WON',
-                'succeeded_at' => $observedAt,
-                'completed_at' => $observedAt,
+                'provider_http_status' => 200,
+                'provider_latency_ms' => 12,
+                'succeeded_at' => $callbackObservedAt,
+                'first_result_at' => $callbackObservedAt,
             ]);
             CashbackReward::query()->whereKey($reward->id)->update([
                 'status' => CashbackRewardStatus::Paid,
-                'paid_at' => $observedAt,
+                'paid_at' => $callbackObservedAt,
             ]);
         },
         new CashbackTransferResult(
             status: PayoutStatus::Pending,
             transferCode: 'TRF_OLDER_RESPONSE',
+            httpStatus: 202,
+            latencyMs: 99,
         ),
     );
     $action = new ProcessCashbackPayout(
@@ -484,6 +485,9 @@ it('does not overwrite a newer durable lifecycle fact with an older provider res
 
     expect($payout?->status)->toBe(PayoutStatus::Succeeded)
         ->and($payout?->provider_transfer_code)->toBe('TRF_CALLBACK_WON')
+        ->and($payout?->first_result_at?->equalTo($callbackObservedAt))->toBeTrue()
+        ->and($payout?->provider_http_status)->toBe(200)
+        ->and($payout?->provider_latency_ms)->toBe(12)
         ->and($reward->status)->toBe(CashbackRewardStatus::Paid)
         ->and($reward->paid_at)->not->toBeNull();
 });

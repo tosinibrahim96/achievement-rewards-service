@@ -13,6 +13,7 @@ use App\Models\PayoutAccount;
 use App\Models\ProviderWebhookReceipt;
 use App\Models\User;
 use App\Models\UserBadge;
+use Carbon\CarbonImmutable;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
 use Tests\Support\ConcurrentRunner;
 
@@ -25,14 +26,13 @@ it('deduplicates two concurrent deliveries of the exact signed body', function (
         ->for($user)
         ->for(UserBadge::factory()->for($user), 'userBadge')
         ->create([
-            'provider' => PaymentProvider::Paystack,
             'status' => CashbackRewardStatus::Pending,
-            'last_attempted_at' => now()->subMinute(),
         ]);
     $account = PayoutAccount::factory()->for($user)->create([
         'provider' => PaymentProvider::Paystack,
         'provider_recipient_code' => 'RCP_CONCURRENT_WEBHOOK',
     ]);
+    $firstResultAt = CarbonImmutable::parse('2026-08-24T12:00:00Z');
     $payout = Payout::factory()->create([
         'cashback_reward_id' => $reward->id,
         'payout_account_id' => $account->id,
@@ -40,7 +40,7 @@ it('deduplicates two concurrent deliveries of the exact signed body', function (
         'provider_recipient_code' => $account->provider_recipient_code,
         'status' => PayoutStatus::Pending,
         'provider_transfer_code' => 'TRF_CONCURRENT_WEBHOOK',
-        'completed_at' => now()->subMinute(),
+        'first_result_at' => $firstResultAt,
     ]);
     $body = json_encode([
         'event' => 'transfer.success',
@@ -68,5 +68,6 @@ it('deduplicates two concurrent deliveries of the exact signed body', function (
         ->and(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Applied)
         ->and($payout->status)->toBe(PayoutStatus::Succeeded)
+        ->and($payout->first_result_at?->equalTo($firstResultAt))->toBeTrue()
         ->and($reward->status)->toBe(CashbackRewardStatus::Paid);
 });

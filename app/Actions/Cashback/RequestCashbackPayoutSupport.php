@@ -94,8 +94,8 @@ final readonly class RequestCashbackPayoutSupport
         return match ($status) {
             PayoutStatus::InsufficientFunds => CashbackPayoutIssue::FundingRequired,
             PayoutStatus::Ambiguous => CashbackPayoutIssue::StatusUncertain,
-            PayoutStatus::RetryableRejection => CashbackPayoutIssue::TemporaryRejection,
-            PayoutStatus::PermanentRejection,
+            PayoutStatus::RateLimited => CashbackPayoutIssue::RateLimited,
+            PayoutStatus::Rejected,
             PayoutStatus::OtpRequired,
             PayoutStatus::Failed,
             PayoutStatus::Reversed => CashbackPayoutIssue::HumanReview,

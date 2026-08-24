@@ -263,15 +263,13 @@ final readonly class HandlePaystackWebhook
                 'reversed_at' => $newPayoutStatus === PayoutStatus::Reversed
                     ? $callbackTime
                     : null,
-                'completed_at' => $payout->completed_at ?? $callbackTime,
+                'first_result_at' => $payout->first_result_at ?? $callbackTime,
             ]);
 
             $reward->fill([
                 'status' => $newPayoutStatus === PayoutStatus::Succeeded
                     ? CashbackRewardStatus::Paid
                     : CashbackRewardStatus::RequiresAttention,
-                'last_error_code' => $errorCode?->value,
-                'last_error_message' => $errorMessage,
                 'paid_at' => $newPayoutStatus === PayoutStatus::Succeeded
                     ? $callbackTime
                     : null,
@@ -305,8 +303,7 @@ final readonly class HandlePaystackWebhook
         #[SensitiveParameter] Payout $payout,
         #[SensitiveParameter] PaystackTransferCallback $callback,
     ): bool {
-        return $reward->provider === PaymentProvider::Paystack
-            && $payout->provider === PaymentProvider::Paystack
+        return $payout->provider === PaymentProvider::Paystack
             && $reward->provider_reference === $callback->providerReference
             && $payout->provider_reference === $callback->providerReference
             && $payout->provider_recipient_code === $callback->recipientCode

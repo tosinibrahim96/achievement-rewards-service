@@ -42,8 +42,8 @@ enum PaystackTransferEvent: string
             PayoutStatus::OtpRequired => true,
             PayoutStatus::Succeeded => $this === self::Reversed,
             PayoutStatus::InsufficientFunds,
-            PayoutStatus::RetryableRejection,
-            PayoutStatus::PermanentRejection,
+            PayoutStatus::RateLimited,
+            PayoutStatus::Rejected,
             PayoutStatus::Failed,
             PayoutStatus::Reversed => false,
         };
