@@ -2,23 +2,22 @@
 
 declare(strict_types=1);
 
-use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
 use App\Enums\CashbackPayoutIssue;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
-use App\Models\PayoutAttempt;
 use App\Models\User;
 use App\Models\UserBadge;
 use App\Notifications\CashbackPayoutRequiresAttention;
@@ -53,11 +52,6 @@ final class FixedSupportOutcomeGateway implements CashbackTransferGateway
     {
         return $this->result;
     }
-
-    public function verifyTransfer(string $providerReference): CashbackTransferVerification
-    {
-        return new CashbackTransferVerification(null);
-    }
 }
 
 /** @return array{CashbackReward, PayoutAccount} */
@@ -79,8 +73,8 @@ function rewardForPayoutSupportTest(): array
 function processSupportOutcome(
     CashbackReward $reward,
     CashbackTransferResult $result,
-): ?PayoutAttempt {
-    return (new ProcessCashbackPayment(
+): ?Payout {
+    return (new ProcessCashbackPayout(
         new PaymentProviderRegistry(
             [],
             [new FixedSupportOutcomeGateway($result)],
@@ -95,6 +89,12 @@ beforeEach(function (): void {
     Notification::fake();
 });
 
+it('gives support the real review path for an uncertain Paystack payout', function (): void {
+    expect(CashbackPayoutIssue::StatusUncertain->nextAction())->toBe(
+        'Wait for a matching callback; if none arrives, review the existing transfer in Paystack before considering another transfer.',
+    );
+});
+
 it('maps each unresolved initial outcome to one safe support category', function (
     CashbackTransferResult $result,
     CashbackPayoutIssue $expectedIssue,
@@ -102,11 +102,11 @@ it('maps each unresolved initial outcome to one safe support category', function
 ): void {
     [$reward, $account] = rewardForPayoutSupportTest();
 
-    $attempt = processSupportOutcome($reward, $result);
+    $payout = processSupportOutcome($reward, $result);
     $reward->refresh();
 
-    expect($attempt)->not->toBeNull()
-        ->and($attempt?->support_alert_requested_at)->not->toBeNull()
+    expect($payout)->not->toBeNull()
+        ->and($payout?->support_alert_requested_at)->not->toBeNull()
         ->and($reward->status)->toBe($expectedRewardStatus);
     Notification::assertSentOnDemand(
         CashbackPayoutRequiresAttention::class,
@@ -114,7 +114,7 @@ it('maps each unresolved initial outcome to one safe support category', function
             CashbackPayoutRequiresAttention $notification,
             array $channels,
             AnonymousNotifiable $notifiable,
-        ) use ($reward, $attempt, $account, $expectedIssue): bool {
+        ) use ($reward, $payout, $account, $expectedIssue): bool {
             $mail = $notification->toMail($notifiable);
             $content = implode(' ', $mail->introLines);
 
@@ -122,7 +122,7 @@ it('maps each unresolved initial outcome to one safe support category', function
                 && $notifiable->routeNotificationFor('mail') === 'support@example.test'
                 && $notification instanceof ShouldQueueAfterCommit
                 && str_contains($content, "Cashback reward #{$reward->id}")
-                && str_contains($content, "Payout attempt: #{$attempt?->id}")
+                && str_contains($content, "Payout: #{$payout?->id}")
                 && str_contains($content, "Issue: {$expectedIssue->value}")
                 && str_contains($content, $expectedIssue->reason())
                 && str_contains($content, $expectedIssue->nextAction())
@@ -136,7 +136,7 @@ it('maps each unresolved initial outcome to one safe support category', function
 })->with([
     'funding required' => [
         new CashbackTransferResult(
-            status: PayoutAttemptStatus::InsufficientFunds,
+            status: PayoutStatus::InsufficientFunds,
             errorCode: CashbackTransferErrorCode::InsufficientFunds,
             errorMessage: 'PRIVATE_PROVIDER_REASON',
             observedBalanceMinor: 0,
@@ -146,7 +146,7 @@ it('maps each unresolved initial outcome to one safe support category', function
     ],
     'status uncertain' => [
         new CashbackTransferResult(
-            status: PayoutAttemptStatus::Ambiguous,
+            status: PayoutStatus::Ambiguous,
             errorCode: CashbackTransferErrorCode::ProviderTimeout,
             errorMessage: 'PRIVATE_PROVIDER_REASON',
         ),
@@ -155,7 +155,7 @@ it('maps each unresolved initial outcome to one safe support category', function
     ],
     'temporary rejection' => [
         new CashbackTransferResult(
-            status: PayoutAttemptStatus::RetryableRejection,
+            status: PayoutStatus::RetryableRejection,
             errorCode: CashbackTransferErrorCode::RateLimited,
             errorMessage: 'PRIVATE_PROVIDER_REASON',
         ),
@@ -164,7 +164,7 @@ it('maps each unresolved initial outcome to one safe support category', function
     ],
     'human review' => [
         new CashbackTransferResult(
-            status: PayoutAttemptStatus::PermanentRejection,
+            status: PayoutStatus::PermanentRejection,
             errorCode: CashbackTransferErrorCode::PermanentFailure,
             errorMessage: 'PRIVATE_PROVIDER_REASON',
         ),
@@ -178,17 +178,17 @@ it('does not alert for pending or successful outcomes', function (
 ): void {
     [$reward] = rewardForPayoutSupportTest();
 
-    $attempt = processSupportOutcome($reward, $result);
+    $payout = processSupportOutcome($reward, $result);
 
-    expect($attempt?->support_alert_requested_at)->toBeNull();
+    expect($payout?->support_alert_requested_at)->toBeNull();
     Notification::assertNothingSent();
 })->with([
     'pending' => [new CashbackTransferResult(
-        status: PayoutAttemptStatus::Pending,
+        status: PayoutStatus::Pending,
         transferCode: 'TRF_PENDING_SUPPORT_TEST',
     )],
     'success' => [new CashbackTransferResult(
-        status: PayoutAttemptStatus::Succeeded,
+        status: PayoutStatus::Succeeded,
         transferCode: 'TRF_SUCCESS_SUPPORT_TEST',
     )],
 ]);
@@ -196,7 +196,7 @@ it('does not alert for pending or successful outcomes', function (
 it('requests support only once when the same payout work is delivered again', function (): void {
     [$reward] = rewardForPayoutSupportTest();
     $result = new CashbackTransferResult(
-        status: PayoutAttemptStatus::Ambiguous,
+        status: PayoutStatus::Ambiguous,
         errorCode: CashbackTransferErrorCode::ProviderTimeout,
         errorMessage: 'The provider outcome could not be confirmed.',
     );
@@ -206,14 +206,14 @@ it('requests support only once when the same payout work is delivered again', fu
 
     expect($first?->support_alert_requested_at)->not->toBeNull()
         ->and($second)->toBeNull()
-        ->and(PayoutAttempt::query()->count())->toBe(1);
+        ->and(Payout::query()->count())->toBe(1);
     Notification::assertSentOnDemandTimes(CashbackPayoutRequiresAttention::class, 1);
 });
 
 it('logs payout processing and support intent with exact safe allowlists and scoped correlation', function (): void {
     [$reward] = rewardForPayoutSupportTest();
     $result = new CashbackTransferResult(
-        status: PayoutAttemptStatus::RetryableRejection,
+        status: PayoutStatus::RetryableRejection,
         httpStatus: 429,
         errorCode: CashbackTransferErrorCode::RateLimited,
         errorMessage: 'PRIVATE_PROVIDER_REASON',
@@ -225,10 +225,10 @@ it('logs payout processing and support intent with exact safe allowlists and sco
         Mockery::on(function (array $context) use ($reward): bool {
             return array_keys($context) === [
                 'cashback_reward_id',
-                'payout_attempt_id',
+                'payout_id',
                 'provider',
                 'state_changed',
-                'attempt_status',
+                'payout_status',
                 'reward_status',
                 'error_code',
                 'provider_http_status',
@@ -237,7 +237,7 @@ it('logs payout processing and support intent with exact safe allowlists and sco
             ]
                 && $context['cashback_reward_id'] === $reward->id
                 && $context['state_changed'] === true
-                && $context['attempt_status'] === PayoutAttemptStatus::RetryableRejection->value
+                && $context['payout_status'] === PayoutStatus::RetryableRejection->value
                 && $context['reward_status'] === CashbackRewardStatus::RequiresAttention->value
                 && $context['error_code'] === CashbackTransferErrorCode::RateLimited->value
                 && $context['provider_http_status'] === 429
@@ -250,9 +250,9 @@ it('logs payout processing and support intent with exact safe allowlists and sco
         Mockery::on(function (array $context) use ($reward): bool {
             return array_keys($context) === [
                 'cashback_reward_id',
-                'payout_attempt_id',
+                'payout_id',
                 'issue_category',
-                'attempt_status',
+                'payout_status',
                 'reward_status',
                 'error_code',
                 'provider_http_status',
@@ -276,15 +276,15 @@ it('keeps committed state and warning evidence when the notification queue push 
     app()->instance(Dispatcher::class, $dispatcher);
     [$reward] = rewardForPayoutSupportTest();
     $result = new CashbackTransferResult(
-        status: PayoutAttemptStatus::Ambiguous,
+        status: PayoutStatus::Ambiguous,
         errorCode: CashbackTransferErrorCode::ProviderTimeout,
         errorMessage: 'The provider outcome could not be confirmed.',
     );
 
-    $attempt = processSupportOutcome($reward, $result);
+    $payout = processSupportOutcome($reward, $result);
     $reward->refresh();
 
-    expect($attempt?->support_alert_requested_at)->not->toBeNull()
+    expect($payout?->support_alert_requested_at)->not->toBeNull()
         ->and($reward->status)->toBe(CashbackRewardStatus::Processing);
     Log::shouldHaveReceived('warning')->with(
         'cashback.payout.support_requested',
@@ -303,22 +303,22 @@ it('still attempts notification when the post-commit support log fails', functio
     app()->instance(Dispatcher::class, $dispatcher);
     [$reward] = rewardForPayoutSupportTest();
     $result = new CashbackTransferResult(
-        status: PayoutAttemptStatus::PermanentRejection,
+        status: PayoutStatus::PermanentRejection,
         errorCode: CashbackTransferErrorCode::PermanentFailure,
         errorMessage: 'A safe permanent failure.',
     );
 
-    $attempt = processSupportOutcome($reward, $result);
+    $payout = processSupportOutcome($reward, $result);
 
-    expect($attempt?->support_alert_requested_at)->not->toBeNull();
+    expect($payout?->support_alert_requested_at)->not->toBeNull();
 });
 
 it('requires the alert stamp to be selected while the payout row is transaction-locked', function (): void {
-    $attempt = PayoutAttempt::factory()->create();
+    $payout = Payout::factory()->create();
 
     expect(fn () => app(RequestCashbackPayoutSupport::class)->markWhileLocked(
-        $attempt->cashbackReward,
-        $attempt,
+        $payout->cashbackReward,
+        $payout,
     ))->toThrow(
         LogicException::class,
         'A support request must be marked inside the payout transaction.',

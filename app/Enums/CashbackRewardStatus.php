@@ -18,25 +18,25 @@ enum CashbackRewardStatus: string
     case Paid = 'paid';
     case RequiresAttention = 'requires_attention';
 
-    public static function forAttempt(PayoutAttemptStatus $status): self
+    public static function forPayout(PayoutStatus $status): self
     {
         /*
-         * The reward status says what the customer sees. The attempt status records
-         * the provider call. Started or Ambiguous means a payment may exist, so the
+         * The reward status says what the customer sees. The payout status records
+         * the provider call. Started or Ambiguous means a transfer may exist, so the
          * reward stays Processing. Pending is still with the provider. Success is
          * Paid. Low funds is AwaitingFunds. Every other result needs support.
          */
         return match ($status) {
-            PayoutAttemptStatus::Started,
-            PayoutAttemptStatus::Ambiguous => self::Processing,
-            PayoutAttemptStatus::Pending => self::Pending,
-            PayoutAttemptStatus::Succeeded => self::Paid,
-            PayoutAttemptStatus::InsufficientFunds => self::AwaitingFunds,
-            PayoutAttemptStatus::RetryableRejection,
-            PayoutAttemptStatus::PermanentRejection,
-            PayoutAttemptStatus::OtpRequired,
-            PayoutAttemptStatus::Failed,
-            PayoutAttemptStatus::Reversed => self::RequiresAttention,
+            PayoutStatus::Started,
+            PayoutStatus::Ambiguous => self::Processing,
+            PayoutStatus::Pending => self::Pending,
+            PayoutStatus::Succeeded => self::Paid,
+            PayoutStatus::InsufficientFunds => self::AwaitingFunds,
+            PayoutStatus::RetryableRejection,
+            PayoutStatus::PermanentRejection,
+            PayoutStatus::OtpRequired,
+            PayoutStatus::Failed,
+            PayoutStatus::Reversed => self::RequiresAttention,
         };
     }
 }

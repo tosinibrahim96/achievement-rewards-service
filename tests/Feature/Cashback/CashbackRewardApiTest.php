@@ -121,7 +121,7 @@ it('shows ready for payout without exposing its verified destination', function 
         ->and($response->getContent())->not->toContain($reward->provider_reference)
         ->not->toContain($account->provider_recipient_code)
         ->not->toContain($account->account_last_four)
-        ->not->toContain('payout_attempt_id')
+        ->not->toContain('payout_id')
         ->not->toContain('last_error');
 });
 

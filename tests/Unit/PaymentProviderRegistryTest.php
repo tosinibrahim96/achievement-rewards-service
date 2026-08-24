@@ -5,12 +5,11 @@ declare(strict_types=1);
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentProviderFailure;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Exceptions\Payments\PaymentProviderException;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
@@ -35,14 +34,9 @@ function transferGatewayForRegistryTest(PaymentProvider $provider): CashbackTran
         public function initiateTransfer(CashbackTransferRequest $request): CashbackTransferResult
         {
             return new CashbackTransferResult(
-                status: PayoutAttemptStatus::Succeeded,
+                status: PayoutStatus::Succeeded,
                 transferCode: 'TRF_registry',
             );
-        }
-
-        public function verifyTransfer(string $providerReference): CashbackTransferVerification
-        {
-            return new CashbackTransferVerification(null);
         }
     };
 }

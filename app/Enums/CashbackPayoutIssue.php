@@ -25,9 +25,9 @@ enum CashbackPayoutIssue: string
     {
         return match ($this) {
             self::FundingRequired => 'Fund the payout balance, then review the unresolved reward before any new transfer.',
-            self::StatusUncertain => 'Verify the existing transfer from its stored payment record before considering another transfer.',
-            self::TemporaryRejection => 'Review the stored attempt and provider availability before deciding whether to retry manually.',
-            self::HumanReview => 'Inspect the stored payout attempt and resolve the customer\'s outstanding reward.',
+            self::StatusUncertain => 'Wait for a matching callback; if none arrives, review the existing transfer in Paystack before considering another transfer.',
+            self::TemporaryRejection => 'Review the stored payout and provider availability before deciding whether to retry manually.',
+            self::HumanReview => 'Inspect the stored payout and resolve the customer\'s outstanding reward.',
         };
     }
 }

@@ -5,7 +5,7 @@ declare(strict_types=1);
 use App\Actions\Auth\LoginCustomer;
 use App\Actions\Auth\RegisterCustomer;
 use App\Actions\Cashback\HandlePaystackWebhook;
-use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
 use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Data\Auth\LoginCustomerInput;
@@ -80,7 +80,6 @@ it('marks Paystack account data and provider envelopes at every fallible infrast
         [PaystackCashbackTransferGateway::class, 'hasValidTransferFacts', 'data'],
         [PaystackCashbackTransferGateway::class, 'mapRejectedTransfer', 'response'],
         [PaystackCashbackTransferGateway::class, 'ambiguousResponse', 'response'],
-        [PaystackCashbackTransferGateway::class, 'isTransferNotFound', 'response'],
         [PaystackCashbackTransferGateway::class, 'transferCodeFrom', 'response'],
     ];
 
@@ -102,19 +101,19 @@ it('marks raw and provider-identity callback values at fallible boundaries', fun
         [HandlePaystackWebhook::class, 'readTransferCallback', 'providerReference'],
         [HandlePaystackWebhook::class, 'applyCallback', 'receipt'],
         [HandlePaystackWebhook::class, 'applyCallback', 'callback'],
-        [HandlePaystackWebhook::class, 'callbackMatchesPayment', 'reward'],
-        [HandlePaystackWebhook::class, 'callbackMatchesPayment', 'attempt'],
-        [HandlePaystackWebhook::class, 'callbackMatchesPayment', 'callback'],
+        [HandlePaystackWebhook::class, 'callbackMatchesPayout', 'reward'],
+        [HandlePaystackWebhook::class, 'callbackMatchesPayout', 'payout'],
+        [HandlePaystackWebhook::class, 'callbackMatchesPayout', 'callback'],
         [HandlePaystackWebhook::class, 'saveReceiptResult', 'receipt'],
         [HandlePaystackWebhook::class, 'decodeJsonObject', 'rawBody'],
         [HandlePaystackWebhook::class, 'readProperty', 'object'],
         [HandlePaystackWebhook::class, 'readPrintableText', 'value'],
-        [ProcessCashbackPayment::class, 'finishPayment', 'claim'],
-        [ProcessCashbackPayment::class, 'finishPayment', 'transferResult'],
-        [ProcessCashbackPayment::class, 'saveTransferResult', 'claim'],
-        [ProcessCashbackPayment::class, 'saveTransferResult', 'transferResult'],
+        [ProcessCashbackPayout::class, 'finishPayout', 'claim'],
+        [ProcessCashbackPayout::class, 'finishPayout', 'transferResult'],
+        [ProcessCashbackPayout::class, 'saveTransferResult', 'claim'],
+        [ProcessCashbackPayout::class, 'saveTransferResult', 'transferResult'],
         [RequestCashbackPayoutSupport::class, 'markWhileLocked', 'reward'],
-        [RequestCashbackPayoutSupport::class, 'markWhileLocked', 'attempt'],
+        [RequestCashbackPayoutSupport::class, 'markWhileLocked', 'payout'],
         [PaystackClient::class, 'signatureMatchesBody', 'rawBody'],
         [PaystackClient::class, 'signatureMatchesBody', 'signature'],
     ];

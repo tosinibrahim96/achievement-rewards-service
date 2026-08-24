@@ -7,15 +7,15 @@ namespace Database\Factories;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
-use App\Models\PayoutAttempt;
 use Illuminate\Database\Eloquent\Factories\Factory;
 use LogicException;
 
-/** @extends Factory<PayoutAttempt> */
-class PayoutAttemptFactory extends Factory
+/** @extends Factory<Payout> */
+class PayoutFactory extends Factory
 {
     /** @return array<string, mixed> */
     public function definition(): array
@@ -26,7 +26,6 @@ class PayoutAttemptFactory extends Factory
                 'status' => CashbackRewardStatus::Processing,
                 'last_attempted_at' => now(),
             ]),
-            'attempt_number' => 1,
             'payout_account_id' => static function (array $attributes): int {
                 $reward = self::rewardFrom($attributes);
                 $existingAccount = PayoutAccount::query()
@@ -42,7 +41,7 @@ class PayoutAttemptFactory extends Factory
             'provider_recipient_code' => static fn (array $attributes): string => self::accountFrom($attributes)->provider_recipient_code,
             'amount_minor' => static fn (array $attributes): int => self::rewardFrom($attributes)->amount_minor,
             'currency' => static fn (array $attributes): Currency => self::rewardFrom($attributes)->currency,
-            'status' => PayoutAttemptStatus::Started,
+            'status' => PayoutStatus::Started,
             'provider_transfer_code' => null,
             'provider_http_status' => null,
             'provider_error_code' => null,
@@ -63,7 +62,7 @@ class PayoutAttemptFactory extends Factory
         $rewardId = $attributes['cashback_reward_id'] ?? null;
 
         if (! is_int($rewardId)) {
-            throw new LogicException('A persisted cashback reward is required to create a payout attempt factory record.');
+            throw new LogicException('A persisted cashback reward is required to create a payout factory record.');
         }
 
         return CashbackReward::query()->findOrFail($rewardId);
@@ -75,7 +74,7 @@ class PayoutAttemptFactory extends Factory
         $payoutAccountId = $attributes['payout_account_id'] ?? null;
 
         if (! is_int($payoutAccountId)) {
-            throw new LogicException('A persisted payout account is required to create a payout attempt factory record.');
+            throw new LogicException('A persisted payout account is required to create a payout factory record.');
         }
 
         return PayoutAccount::query()->findOrFail($payoutAccountId);

@@ -20,7 +20,7 @@ class ProviderWebhookReceiptFactory extends Factory
             'body_hash' => hash('sha256', fake()->unique()->uuid()),
             'event_type' => 'transfer.pending',
             'provider_reference' => null,
-            'payout_attempt_id' => null,
+            'payout_id' => null,
             'result' => ProviderWebhookReceiptResult::Unsupported,
             'received_at' => now(),
         ];

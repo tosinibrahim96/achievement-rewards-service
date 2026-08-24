@@ -3,7 +3,7 @@
 declare(strict_types=1);
 
 use App\Enums\CashbackRewardStatus;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Enums\PaystackTransferEvent;
 
 it('uses only the three supported Paystack callback events', function (): void {
@@ -17,120 +17,120 @@ it('uses only the three supported Paystack callback events', function (): void {
     ]);
 });
 
-it('shows the reward status for every payout attempt status', function (
-    PayoutAttemptStatus $attemptStatus,
+it('shows the reward status for every payout status', function (
+    PayoutStatus $payoutStatus,
     CashbackRewardStatus $rewardStatus,
 ): void {
-    expect(CashbackRewardStatus::forAttempt($attemptStatus))->toBe($rewardStatus);
+    expect(CashbackRewardStatus::forPayout($payoutStatus))->toBe($rewardStatus);
 })->with([
-    'started payment is processing' => [
-        PayoutAttemptStatus::Started,
+    'started payout is processing' => [
+        PayoutStatus::Started,
         CashbackRewardStatus::Processing,
     ],
-    'unknown payment result is processing' => [
-        PayoutAttemptStatus::Ambiguous,
+    'unknown payout result is processing' => [
+        PayoutStatus::Ambiguous,
         CashbackRewardStatus::Processing,
     ],
-    'pending payment is pending' => [
-        PayoutAttemptStatus::Pending,
+    'pending payout is pending' => [
+        PayoutStatus::Pending,
         CashbackRewardStatus::Pending,
     ],
-    'successful payment is paid' => [
-        PayoutAttemptStatus::Succeeded,
+    'successful payout is paid' => [
+        PayoutStatus::Succeeded,
         CashbackRewardStatus::Paid,
     ],
     'insufficient funds waits for funds' => [
-        PayoutAttemptStatus::InsufficientFunds,
+        PayoutStatus::InsufficientFunds,
         CashbackRewardStatus::AwaitingFunds,
     ],
     'temporary rejection needs attention because there is no retry worker' => [
-        PayoutAttemptStatus::RetryableRejection,
+        PayoutStatus::RetryableRejection,
         CashbackRewardStatus::RequiresAttention,
     ],
     'permanent rejection needs attention' => [
-        PayoutAttemptStatus::PermanentRejection,
+        PayoutStatus::PermanentRejection,
         CashbackRewardStatus::RequiresAttention,
     ],
     'OTP request needs attention' => [
-        PayoutAttemptStatus::OtpRequired,
+        PayoutStatus::OtpRequired,
         CashbackRewardStatus::RequiresAttention,
     ],
-    'failed payment needs attention' => [
-        PayoutAttemptStatus::Failed,
+    'failed payout needs attention' => [
+        PayoutStatus::Failed,
         CashbackRewardStatus::RequiresAttention,
     ],
-    'reversed payment needs attention' => [
-        PayoutAttemptStatus::Reversed,
+    'reversed payout needs attention' => [
+        PayoutStatus::Reversed,
         CashbackRewardStatus::RequiresAttention,
     ],
 ]);
 
-it('allows only callbacks that can still change the attempt', function (
-    PayoutAttemptStatus $attemptStatus,
+it('allows only callbacks that can still change the payout', function (
+    PayoutStatus $payoutStatus,
     bool $allowsSuccess,
     bool $allowsFailure,
     bool $allowsReversal,
 ): void {
-    expect(PaystackTransferEvent::Succeeded->canChangeAttemptFrom($attemptStatus))->toBe($allowsSuccess)
-        ->and(PaystackTransferEvent::Failed->canChangeAttemptFrom($attemptStatus))->toBe($allowsFailure)
-        ->and(PaystackTransferEvent::Reversed->canChangeAttemptFrom($attemptStatus))->toBe($allowsReversal);
+    expect(PaystackTransferEvent::Succeeded->canChangePayoutFrom($payoutStatus))->toBe($allowsSuccess)
+        ->and(PaystackTransferEvent::Failed->canChangePayoutFrom($payoutStatus))->toBe($allowsFailure)
+        ->and(PaystackTransferEvent::Reversed->canChangePayoutFrom($payoutStatus))->toBe($allowsReversal);
 })->with([
-    'started payment accepts any final callback' => [
-        PayoutAttemptStatus::Started,
+    'started payout accepts any final callback' => [
+        PayoutStatus::Started,
         true,
         true,
         true,
     ],
-    'unknown payment result accepts any final callback' => [
-        PayoutAttemptStatus::Ambiguous,
+    'unknown payout result accepts any final callback' => [
+        PayoutStatus::Ambiguous,
         true,
         true,
         true,
     ],
-    'pending payment accepts any final callback' => [
-        PayoutAttemptStatus::Pending,
+    'pending payout accepts any final callback' => [
+        PayoutStatus::Pending,
         true,
         true,
         true,
     ],
-    'successful payment accepts only reversal' => [
-        PayoutAttemptStatus::Succeeded,
+    'successful payout accepts only reversal' => [
+        PayoutStatus::Succeeded,
         false,
         false,
         true,
     ],
     'insufficient funds accepts no callback' => [
-        PayoutAttemptStatus::InsufficientFunds,
+        PayoutStatus::InsufficientFunds,
         false,
         false,
         false,
     ],
     'temporary rejection accepts no callback' => [
-        PayoutAttemptStatus::RetryableRejection,
+        PayoutStatus::RetryableRejection,
         false,
         false,
         false,
     ],
     'permanent rejection accepts no callback' => [
-        PayoutAttemptStatus::PermanentRejection,
+        PayoutStatus::PermanentRejection,
         false,
         false,
         false,
     ],
     'OTP request accepts any final callback' => [
-        PayoutAttemptStatus::OtpRequired,
+        PayoutStatus::OtpRequired,
         true,
         true,
         true,
     ],
-    'failed payment accepts no callback' => [
-        PayoutAttemptStatus::Failed,
+    'failed payout accepts no callback' => [
+        PayoutStatus::Failed,
         false,
         false,
         false,
     ],
-    'reversed payment accepts no callback' => [
-        PayoutAttemptStatus::Reversed,
+    'reversed payout accepts no callback' => [
+        PayoutStatus::Reversed,
         false,
         false,
         false,

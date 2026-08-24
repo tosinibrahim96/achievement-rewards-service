@@ -7,7 +7,7 @@ namespace App\Infrastructure\Payments;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use Illuminate\Container\Attributes\Config;
 use Illuminate\Support\Facades\Redis;
 use JsonException;
@@ -59,10 +59,10 @@ final readonly class FakeTransferEffectRegistry
 
     public function create(
         CashbackTransferRequest $request,
-        PayoutAttemptStatus $status,
+        PayoutStatus $status,
     ): CashbackTransferResult {
-        if (! in_array($status, [PayoutAttemptStatus::Succeeded, PayoutAttemptStatus::Pending], true)) {
-            throw new LogicException('Only a provider-created fake transfer may consume a reference.');
+        if (! in_array($status, [PayoutStatus::Succeeded, PayoutStatus::Pending], true)) {
+            throw new LogicException('A fake transfer can be stored only with pending or succeeded status.');
         }
 
         $record = [
@@ -81,7 +81,7 @@ final readonly class FakeTransferEffectRegistry
         /*
          * SETNX means "set if not exists." Only the first caller can save a result.
          * Read the saved result because this caller may have lost that race. The
-         * read also checks that the reference still has the same payment details.
+         * read also checks that the reference still has the same transfer details.
          */
         Redis::connection('default')->command('setnx', [
             $this->keyForReference($request->providerReference),
@@ -147,9 +147,9 @@ final readonly class FakeTransferEffectRegistry
     {
         $statusValue = $record['status'] ?? null;
         $transferCode = $record['transfer_code'] ?? null;
-        $status = is_string($statusValue) ? PayoutAttemptStatus::tryFrom($statusValue) : null;
+        $status = is_string($statusValue) ? PayoutStatus::tryFrom($statusValue) : null;
 
-        if (! in_array($status, [PayoutAttemptStatus::Succeeded, PayoutAttemptStatus::Pending], true)
+        if (! in_array($status, [PayoutStatus::Succeeded, PayoutStatus::Pending], true)
             || ! is_string($transferCode)
             || $transferCode === '') {
             throw new RuntimeException('The fake transfer effect has an invalid stored representation.');

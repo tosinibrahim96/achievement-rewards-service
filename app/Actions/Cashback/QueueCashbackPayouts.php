@@ -15,7 +15,7 @@ final readonly class QueueCashbackPayouts
     public const DEFAULT_CHUNK_SIZE = 100;
 
     public function __construct(
-        private EnqueueCashbackPayment $enqueueCashbackPayment,
+        private QueueCashbackPayout $queueCashbackPayout,
     ) {}
 
     public function queueForUser(
@@ -41,7 +41,7 @@ final readonly class QueueCashbackPayouts
             ->select('cashback_rewards.id')
             ->where('cashback_rewards.status', CashbackRewardStatus::ReadyForPayout)
             ->whereNull('cashback_rewards.provider')
-            ->whereDoesntHave('payoutAttempts')
+            ->whereDoesntHave('payout')
             ->whereHas(
                 'user.payoutAccount',
                 static fn (Builder $query): Builder => $query->whereNotNull('verified_at'),
@@ -51,13 +51,13 @@ final readonly class QueueCashbackPayouts
             $query->where('cashback_rewards.user_id', $userId);
         }
 
-        $enqueueCashbackPayment = $this->enqueueCashbackPayment;
+        $queueCashbackPayout = $this->queueCashbackPayout;
 
         $query->chunkById(
             $chunkSize,
-            static function (Collection $rewards) use (&$queued, $enqueueCashbackPayment): void {
+            static function (Collection $rewards) use (&$queued, $queueCashbackPayout): void {
                 foreach ($rewards as $reward) {
-                    if ($enqueueCashbackPayment->handle($reward->id)) {
+                    if ($queueCashbackPayout->handle($reward->id)) {
                         $queued++;
                     }
                 }

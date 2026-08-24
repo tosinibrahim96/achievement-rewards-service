@@ -30,7 +30,7 @@ final class CashbackPayoutRequiresAttention extends Notification implements Shou
         return (new MailMessage)
             ->subject('Cashback payout requires attention')
             ->line("Cashback reward #{$this->request->cashbackRewardId} requires support review.")
-            ->line("Payout attempt: #{$this->request->payoutAttemptId}")
+            ->line("Payout: #{$this->request->payoutId}")
             ->line("Issue: {$this->request->issue->value}")
             ->line("Reason: {$this->request->issue->reason()}")
             ->line("Next action: {$this->request->issue->nextAction()}");

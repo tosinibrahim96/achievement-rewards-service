@@ -2,13 +2,13 @@
 
 declare(strict_types=1);
 
-use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
-use App\Models\PayoutAttempt;
 use App\Models\User;
 use App\Models\UserBadge;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -46,9 +46,9 @@ beforeEach(function (): void {
     Notification::fake();
 });
 
-it('persists real-adapter outcomes against the Paystack-owned attempt without using the fake default', function (
+it('persists real-adapter outcomes against the Paystack-owned payout without using the fake default', function (
     string $scenario,
-    PayoutAttemptStatus $attemptStatus,
+    PayoutStatus $payoutStatus,
     CashbackRewardStatus $rewardStatus,
     ?string $errorCode,
 ): void {
@@ -82,32 +82,32 @@ it('persists real-adapter outcomes against the Paystack-owned attempt without us
         ])]);
     }
 
-    $attempt = app(ProcessCashbackPayment::class)->handle($reward->id);
+    $payout = app(ProcessCashbackPayout::class)->handle($reward->id);
     $reward->refresh();
 
-    expect($attempt?->status)->toBe($attemptStatus)
-        ->and($attempt?->provider)->toBe(PaymentProvider::Paystack)
-        ->and($attempt?->payout_account_id)->toBe($account->id)
-        ->and($attempt?->provider_recipient_code)->toBe('RCP_paystack_processor')
-        ->and($attempt?->provider_error_code)->toBe($errorCode)
-        ->and($attempt?->completed_at)->not->toBeNull()
+    expect($payout?->status)->toBe($payoutStatus)
+        ->and($payout?->provider)->toBe(PaymentProvider::Paystack)
+        ->and($payout?->payout_account_id)->toBe($account->id)
+        ->and($payout?->provider_recipient_code)->toBe('RCP_paystack_processor')
+        ->and($payout?->provider_error_code)->toBe($errorCode)
+        ->and($payout?->completed_at)->not->toBeNull()
         ->and($reward->provider)->toBe(PaymentProvider::Paystack)
         ->and($reward->status)->toBe($rewardStatus)
-        ->and(PayoutAttempt::query()->whereBelongsTo($reward, 'cashbackReward')->count())->toBe(1);
+        ->and(Payout::query()->whereBelongsTo($reward, 'cashbackReward')->count())->toBe(1);
 
     Http::assertSent(fn (Request $request): bool => $request->url() === 'https://api.paystack.co/transfer'
         && $request->data()['reference'] === $reward->provider_reference);
     Http::assertSentCount(1);
 
-    expect(app(ProcessCashbackPayment::class)->handle($reward->id))->toBeNull();
+    expect(app(ProcessCashbackPayout::class)->handle($reward->id))->toBeNull();
     Http::assertSentCount(1);
 })->with([
-    'test success' => ['success', PayoutAttemptStatus::Succeeded, CashbackRewardStatus::Paid, null],
-    'live-like pending' => ['pending', PayoutAttemptStatus::Pending, CashbackRewardStatus::Pending, null],
-    'unexpected OTP' => ['otp', PayoutAttemptStatus::OtpRequired, CashbackRewardStatus::RequiresAttention, 'otp_required'],
-    'insufficient funds' => ['insufficient', PayoutAttemptStatus::InsufficientFunds, CashbackRewardStatus::AwaitingFunds, 'insufficient_funds'],
-    'rate limited needs attention without a retry worker' => ['rate_limit', PayoutAttemptStatus::RetryableRejection, CashbackRewardStatus::RequiresAttention, 'rate_limited'],
-    'timeout ambiguity' => ['timeout', PayoutAttemptStatus::Ambiguous, CashbackRewardStatus::Processing, 'provider_timeout'],
+    'test success' => ['success', PayoutStatus::Succeeded, CashbackRewardStatus::Paid, null],
+    'live-like pending' => ['pending', PayoutStatus::Pending, CashbackRewardStatus::Pending, null],
+    'unexpected OTP' => ['otp', PayoutStatus::OtpRequired, CashbackRewardStatus::RequiresAttention, 'otp_required'],
+    'insufficient funds' => ['insufficient', PayoutStatus::InsufficientFunds, CashbackRewardStatus::AwaitingFunds, 'insufficient_funds'],
+    'rate limited needs attention without a retry worker' => ['rate_limit', PayoutStatus::RetryableRejection, CashbackRewardStatus::RequiresAttention, 'rate_limited'],
+    'timeout ambiguity' => ['timeout', PayoutStatus::Ambiguous, CashbackRewardStatus::Processing, 'provider_timeout'],
 ]);
 
 it('does not fall back to fake when a persisted Paystack obligation has no credential', function (): void {
@@ -115,12 +115,12 @@ it('does not fall back to fake when a persisted Paystack obligation has no crede
     [$reward] = payablePaystackRewardForTest();
     Http::fake();
 
-    $attempt = app(ProcessCashbackPayment::class)->handle($reward->id);
+    $payout = app(ProcessCashbackPayout::class)->handle($reward->id);
     $reward->refresh();
 
-    expect($attempt?->provider)->toBe(PaymentProvider::Paystack)
-        ->and($attempt?->status)->toBe(PayoutAttemptStatus::PermanentRejection)
-        ->and($attempt?->provider_error_code)->toBe('provider_unavailable')
+    expect($payout?->provider)->toBe(PaymentProvider::Paystack)
+        ->and($payout?->status)->toBe(PayoutStatus::PermanentRejection)
+        ->and($payout?->provider_error_code)->toBe('provider_unavailable')
         ->and($reward->provider)->toBe(PaymentProvider::Paystack)
         ->and($reward->status)->toBe(CashbackRewardStatus::RequiresAttention);
     Http::assertNothingSent();

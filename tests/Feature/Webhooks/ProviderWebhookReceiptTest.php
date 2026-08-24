@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 use App\Enums\PaymentProvider;
 use App\Enums\ProviderWebhookReceiptResult;
-use App\Models\PayoutAttempt;
+use App\Models\Payout;
 use App\Models\ProviderWebhookReceipt;
 use Carbon\CarbonImmutable;
 use Illuminate\Database\QueryException;
@@ -21,9 +21,9 @@ it('keeps only the approved privacy-minimized receipt columns', function (): voi
         'body_hash',
         'event_type',
         'provider_reference',
-        'payout_attempt_id',
         'result',
         'received_at',
+        'payout_id',
     ])->not->toContain(
         'raw_body',
         'signature',
@@ -45,13 +45,13 @@ it('keeps only the approved privacy-minimized receipt columns', function (): voi
     ))->toBeTrue();
 });
 
-it('casts provenance result receipt time and the optional attempt relationship', function (): void {
+it('casts provenance result receipt time and the optional payout relationship', function (): void {
     $receipt = ProviderWebhookReceipt::factory()->create();
 
     expect($receipt->provider)->toBe(PaymentProvider::Paystack)
         ->and($receipt->result)->toBe(ProviderWebhookReceiptResult::Unsupported)
         ->and($receipt->received_at)->toBeInstanceOf(CarbonImmutable::class)
-        ->and($receipt->payoutAttempt)->toBeNull()
+        ->and($receipt->payout)->toBeNull()
         ->and($receipt->toArray())->not->toHaveKeys(['body_hash', 'provider_reference']);
 });
 
@@ -79,16 +79,16 @@ it('enforces provider-scoped exact-body uniqueness', function (): void {
         ->and(ProviderWebhookReceipt::query()->count())->toBe(1);
 });
 
-it('restricts deletion of a linked payout attempt while allowing an unlinked receipt', function (): void {
-    $attempt = PayoutAttempt::factory()->create();
+it('restricts deletion of a linked payout while allowing an unlinked receipt', function (): void {
+    $payout = Payout::factory()->create();
     $linked = ProviderWebhookReceipt::factory()->create([
-        'payout_attempt_id' => $attempt->id,
+        'payout_id' => $payout->id,
     ]);
     $unlinked = ProviderWebhookReceipt::factory()->create();
 
-    expect($linked->payoutAttempt?->is($attempt))->toBeTrue()
-        ->and($unlinked->payoutAttempt)->toBeNull()
-        ->and(fn () => $attempt->delete())->toThrow(QueryException::class)
+    expect($linked->payout?->is($payout))->toBeTrue()
+        ->and($unlinked->payout)->toBeNull()
+        ->and(fn () => $payout->delete())->toThrow(QueryException::class)
         ->and(ProviderWebhookReceipt::query()->whereKey($linked->id)->exists())->toBeTrue()
-        ->and(PayoutAttempt::query()->whereKey($attempt->id)->exists())->toBeTrue();
+        ->and(Payout::query()->whereKey($payout->id)->exists())->toBeTrue();
 });

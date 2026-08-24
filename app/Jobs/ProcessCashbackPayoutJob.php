@@ -4,13 +4,13 @@ declare(strict_types=1);
 
 namespace App\Jobs;
 
-use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\ProcessCashbackPayout;
 use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Queue\Middleware\WithoutOverlapping;
 
-final class ProcessCashbackPaymentJob implements ShouldBeUnique, ShouldQueue
+final class ProcessCashbackPayoutJob implements ShouldBeUnique, ShouldQueue
 {
     use Queueable;
 
@@ -30,9 +30,9 @@ final class ProcessCashbackPaymentJob implements ShouldBeUnique, ShouldQueue
 
     public function __construct(public int $cashbackRewardId) {}
 
-    public function handle(ProcessCashbackPayment $processCashbackPayment): void
+    public function handle(ProcessCashbackPayout $processCashbackPayout): void
     {
-        $processCashbackPayment->handle($this->cashbackRewardId);
+        $processCashbackPayout->handle($this->cashbackRewardId);
     }
 
     public function uniqueId(): string
@@ -45,12 +45,12 @@ final class ProcessCashbackPaymentJob implements ShouldBeUnique, ShouldQueue
     {
         /*
          * If another job is handling this reward, delete this duplicate instead of
-         * retrying it. The database state still decides whether payment may start.
+         * retrying it. The database state still decides whether a payout may start.
          */
         return [
             (new WithoutOverlapping("reward:{$this->cashbackRewardId}"))
                 ->shared()
-                ->withPrefix('cashback-payment:')
+                ->withPrefix('cashback-payout:')
                 ->dontRelease()
                 ->expireAfter(self::OVERLAP_LOCK_SECONDS),
         ];

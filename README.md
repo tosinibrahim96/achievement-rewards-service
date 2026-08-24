@@ -197,7 +197,7 @@ docker compose restart horizon
 
 Paystack payout-account onboarding keeps the application contract provider-neutral. Internally, the adapter calls `GET /bank/resolve` with the string account number and bank code, uses the returned canonical name in `POST /transferrecipient`, and returns only the recipient code plus masked bank metadata. The full account number and provider payload are discarded rather than persisted.
 
-Cashback transfers use `POST /transfer` with source `balance`, the snapshotted amount and recipient, and the reward's existing stable reference. Paystack's test guide documents immediate `success`, while the general OTP-disabled API flow may return `pending`; the adapter maps the actual `data.status` instead of inferring payment from HTTP `200` or response text. A timeout, malformed response, contradictory envelope, or unknown provider state stays ambiguous and is not automatically re-posted. `GET /balance` and `GET /transfer/verify/{reference}` are available through the adapter for readiness and later reconciliation, but a balance read is advisory rather than a reservation.
+Cashback transfers use one `POST /transfer` with source `balance`, the snapshotted amount and recipient, and the reward's existing stable reference. Paystack's test guide documents immediate `success`, while the general OTP-disabled API flow may return `pending`; the adapter maps the actual `data.status` instead of inferring a transfer result from HTTP `200` or response text. A timeout, malformed response, contradictory envelope, or unknown provider state stays ambiguous and is not automatically re-posted. `GET /balance` is available as an advisory readiness check rather than a reservation. After initiation, only a matching signed Paystack callback can change a non-final Paystack payout; the service does not poll Paystack for transfer status.
 
 The default and CI path remains credential-free: `phpunit.xml` pins the fake driver, Paystack's official API base URL, and a blank Paystack key, while Laravel HTTP fakes prove the exact Paystack URLs, Bearer header, JSON/query payloads, configured timeout options, synthetic timeout classifications, response mappings, and one-request behavior without contacting Paystack. Paystack test versus live mode is selected by the credential, not by a different base URL.
 
@@ -210,7 +210,7 @@ This check is optional and never gates CI or the required reviewer flow. Immedia
 3. Read the available NGN balance through the Dashboard or `GET /balance`. Ensure it can cover NGN 300 plus Paystack's applicable fee.
 4. If needed, prepare test funds outside this service with the Dashboard's test top-up flow or a manually initialized test checkout, verify that test transaction, and read the balance again. Do not add customer collection or automatic funding to this service.
 5. Put the test key in local `.env`, select `PAYMENT_DRIVER=paystack`, restart Horizon, and create or replace the customer's destination through `PUT /api/me/payout-account`. Paystack documents Zenith Bank, account `0000000000`, bank code `057`, and NGN for its Nigerian test recipient.
-6. Trigger the normal fixed NGN 300 reward flow. Accept the actual `success` or `pending` result and verify the same stored reference; never generate a second reference to make the smoke test pass.
+6. Trigger the normal fixed NGN 300 reward flow. Accept the actual `success` or `pending` initiation result and inspect the saved payout state. If it is pending, only a matching signed Paystack callback can supply a later final state; never initiate another transfer or generate a second reference to make the smoke test pass.
 7. If Paystack returns raw `otp`, stop. The service records `otp_required`/`requires_attention` and intentionally calls none of the finalize, resend, enable-OTP, or disable-OTP endpoints. Correct the Dashboard setting before another separately reviewed attempt.
 8. Restore `PAYMENT_DRIVER=fake` after the smoke test and restart Horizon.
 
@@ -226,7 +226,7 @@ Paystack may complete a transfer after the initiation response, so the service e
 
 The route intentionally has no Sanctum bearer middleware: Paystack is not a customer. It authenticates the exact request bytes before JSON parsing, accepts at most 65,536 bytes, requires a canonical lowercase 128-character hexadecimal signature, and compares it with `hash_equals()`. Missing or invalid signatures return `401 invalid_webhook_signature`; oversized bodies return `413 webhook_payload_too_large`; missing, malformed, non-string, or live secret configuration returns `503 webhook_verification_unavailable`. None of those failures creates a receipt or changes a payout.
 
-Every authentic, non-duplicate delivery is handled synchronously in one short PostgreSQL transaction. The service records a privacy-minimized `provider_webhook_receipts` row with internally assigned Paystack provenance, the SHA-256 hash of the exact body, a safe bounded event label/reference when available, an optional restricted link to the fully matched payout attempt, one final handling result, and `received_at`. It does **not** retain the raw body, signature, provider transfer/recipient code, amount, currency, reason, customer data, request/correlation ID, or generic timestamps.
+Every authentic, non-duplicate delivery is handled synchronously in one short PostgreSQL transaction. The service records a privacy-minimized `provider_webhook_receipts` row with internally assigned Paystack provenance, the SHA-256 hash of the exact body, a safe bounded event label/reference when available, an optional restricted link to the fully matched payout, one final handling result, and `received_at`. It does **not** retain the raw body, signature, provider transfer/recipient code, amount, currency, reason, customer data, request/correlation ID, or generic timestamps.
 
 Receipt results answer how this service handled the delivery, not whether the transfer succeeded:
 
@@ -236,27 +236,27 @@ Receipt results answer how this service handled the delivery, not whether the tr
 | `unchanged` | It matched, but the state transition was already applied, stale, contradictory with durable lifecycle state, or no longer allowed. |
 | `invalid` | The authentic JSON, object/type/value shape, or event/status pair was invalid. |
 | `unsupported` | The bounded event name was retained, but this service has no transition rule for it. |
-| `not_found` | No local reward/attempt exists for the valid reference. |
+| `not_found` | No local reward/payout exists for the valid reference. |
 | `mismatch` | The reference located a candidate, but stored provider, recipient, amount, currency, or known transfer code disagreed. |
 
-Only `transfer.success/success`, `transfer.failed/failed`, and `transfer.reversed/reversed` are supported. Root, `data`, and `recipient` must be JSON objects; amount must be a positive JSON integer; currency and source must be exact `NGN` and `balance`; identity strings must be printable ASCII without edge whitespace. Unknown extra fields are ignored. A reference only locates a candidate: provider, reward/attempt reference, recipient, reward/attempt amount and currency, and any already-known transfer code must still match exactly before the receipt links to an attempt or state changes.
+Only `transfer.success/success`, `transfer.failed/failed`, and `transfer.reversed/reversed` are supported. Root, `data`, and `recipient` must be JSON objects; amount must be a positive JSON integer; currency and source must be exact `NGN` and `balance`; identity strings must be printable ASCII without edge whitespace. Unknown extra fields are ignored. A reference only locates a candidate: provider, reward and payout reference, recipient, reward and payout amount and currency, and any already-known transfer code must still match exactly before the receipt links to a payout or state changes.
 
-The callback locks the reward first and payout attempt second, matching initiation completion. `started`, `ambiguous`, `pending`, or `otp_required` may become succeeded, failed, or reversed; a succeeded attempt accepts only a later reversal; failed, reversed, and pre-creation conclusions remain unchanged. Success records `paid`; failure/reversal leave the customer owed and set `requires_attention`. The original initiation completion updates only a still-`processing` reward with a still-`started` attempt, so a callback that wins the race cannot be overwritten by a stale HTTP response.
+The callback locks the reward first and payout second, matching initiation completion. `started`, `ambiguous`, `pending`, or `otp_required` may become succeeded, failed, or reversed; a succeeded payout accepts only a later reversal; failed, reversed, and statuses that mean no transfer was created remain unchanged. Success records `paid`; failure/reversal leave the customer owed and set `requires_attention`. The original initiation completion updates only a still-`processing` reward with a still-`started` payout, so a callback that wins the race cannot be overwritten by a stale HTTP response.
 
 Exact `(provider, body_hash)` redelivery creates no second receipt, transition, log, or alert. Semantically identical JSON with different bytes may create an `unchanged` receipt, while the locked transition remains idempotent. A local transaction failure persists neither receipt nor payout update and returns `500`, allowing Paystack to redeliver the callback; that redelivery is a notification, not another money transfer. Authentic deliveries with a final receipt return empty `200 OK`, including invalid, unsupported, missing, mismatched, and unchanged facts that redelivery cannot repair.
 
 ### Payout support escalation
 
-Set a real deployment-only destination with `CASHBACK_SUPPORT_EMAIL`; `.env.example` deliberately uses the non-deliverable `support@example.test`. The first unresolved transition stamps `payout_attempts.support_alert_requested_at` while the attempt is locked, then requests one queued mail notification after commit:
+Set a real deployment-only destination with `CASHBACK_SUPPORT_EMAIL`; `.env.example` deliberately uses the non-deliverable `support@example.test`. The first unresolved transition stamps `payouts.support_alert_requested_at` while the payout is locked, then requests one queued mail notification after commit:
 
-| Attempt fact | Safe issue category | Suggested action |
+| Payout fact | Safe issue category | Suggested action |
 | --- | --- | --- |
 | `insufficient_funds` | `funding_required` | Fund and review before another transfer. |
-| `ambiguous` | `status_uncertain` | Verify the existing transfer before considering another. |
+| `ambiguous` | `status_uncertain` | Wait for a matching callback; if none arrives, review the existing transfer in Paystack before considering another transfer. |
 | `retryable_rejection` | `temporary_rejection` | Review provider availability before a manual retry decision. |
-| `permanent_rejection`, `otp_required`, `failed`, `reversed` | `human_review` | Inspect the stored attempt and resolve the outstanding reward. |
+| `permanent_rejection`, `otp_required`, `failed`, `reversed` | `human_review` | Inspect the stored payout and resolve the outstanding reward. |
 
-`started`, `pending`, and `succeeded` do not alert. The notification contains only local reward/attempt IDs, category, a service-owned reason, and next action—never account/customer data, provider identifiers/text, request payload, signature, or secret. `support_alert_requested_at` proves intent, not queue acceptance or mailbox delivery. A queue-push failure is reported after the financial state commits and is not made atomic by this MVP. With the local default `MAIL_MAILER=log`, the safe mail is written to the Laravel log rather than delivered; production must configure a real mail transport as well as the support address. Horizon and `failed_jobs` remain the delivery diagnostics.
+`started`, `pending`, and `succeeded` do not alert. The notification contains only local reward and payout IDs, category, a service-owned reason, and next action—never account/customer data, provider identifiers/text, request payload, signature, or secret. `support_alert_requested_at` proves intent, not queue acceptance or mailbox delivery. A queue-push failure is reported after the financial state commits and is not made atomic by this MVP. With the local default `MAIL_MAILER=log`, the safe mail is written to the Laravel log rather than delivered; production must configure a real mail transport as well as the support address. Horizon and `failed_jobs` remain the delivery diagnostics.
 
 ### Business workflow logs
 
@@ -274,7 +274,7 @@ The service tries to write one small structured log after each important busines
 
 Each workflow log uses a fixed allowlist of local IDs, statuses, safe names/results, safe service errors/categories, and provider HTTP status/latency only where needed. It excludes purchase/provider references, amounts, balances, account details, account/bank/customer names, credentials, raw payloads, signatures, provider error text, complete models, requests, data-transfer objects, and exceptions. Laravel Context supplies the request ID. The saved workflow correlation ID is added only when the business record has one.
 
-These logs help with searching and debugging, but they are not an audit ledger and do not prove that a queued job succeeded. A logging failure cannot reverse saved business data. A conflict, provider failure, or database rollback writes no false success log. Database rows—especially `cashback_rewards` and `payout_attempts`—remain the financial truth. This small feature adds no automatic retry, polling, scheduler, reconciliation worker, dashboard, trace system, or logging framework.
+These logs help with searching and debugging, but they are not an audit ledger and do not prove that a queued job succeeded. A logging failure cannot reverse saved business data. A conflict, provider failure, or database rollback writes no false success log. Database rows—especially `cashback_rewards` and `payouts`—remain the financial truth. This small feature adds no automatic retry, polling, scheduler, reconciliation worker, dashboard, trace system, or logging framework.
 
 ## Purchase-driven achievements
 
@@ -391,9 +391,9 @@ trusted POST
     -> dispatch one BadgeUnlocked after commit per new badge
     -> queued wake-up listener asks QueueCashbackPayouts to find ready rewards for that user
     -> queue one unique job carrying only each cashback reward ID
-    -> transactionally snapshot provider, destination, money, and reference in an attempt
+    -> transactionally snapshot provider, destination, money, and reference in a payout
     -> call the snapshotted fake or Paystack transfer gateway after the claim transaction commits
-    -> conditionally persist the factual attempt result and customer-visible reward state
+    -> conditionally persist the factual payout result and customer-visible reward state
 ```
 
 The evaluator may unlock several achievement and badge thresholds for one large purchase. Separate achievement and badge Redis locks prevent each queued stage from overlapping with another delivery of the same stage without blocking the downstream job created by the upstream listener. PostgreSQL user-row locks serialize durable progression, while unique `(user_id, achievement_id)`, `(user_id, badge_id)`, and `user_badge_id` reward constraints remain the final duplicate defenses. Redelivered events remain safe.
@@ -409,7 +409,7 @@ Both events implement after-commit dispatch. A transaction rollback therefore re
 
 ### Durable cashback entitlement and payout execution
 
-`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. Its two pre-payout states have different customer meanings:
+`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that its payout must reuse. Its two pre-payout states have different customer meanings:
 
 | Reward state | Local fact | Payout work |
 | --- | --- | --- |
@@ -418,22 +418,24 @@ Both events implement after-commit dispatch. A transaction rollback therefore re
 
 Badge-first and account-first customers converge before a listener runs. A badge created without an account starts awaiting, and the later account transaction changes every clean waiting reward to ready. If the account exists first, the badge transaction creates the reward ready immediately. Both transactions lock the same customer row before deciding, so the stored state does not depend on queue timing.
 
-Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: `QueueCashbackPayoutsOnBadgeUnlocked` and `QueueCashbackPayoutsOnPayoutAccountVerified` ask `QueueCashbackPayouts` to re-query all ready, unbound, unattempted rewards for that user and queue one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks the reward, requires `ready_for_payout`, rechecks the verified account, copies the provider and destination into a durable `payout_attempts` snapshot, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
+Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: `QueueCashbackPayoutsOnBadgeUnlocked` and `QueueCashbackPayoutsOnPayoutAccountVerified` ask `QueueCashbackPayouts` to re-query all ready, unbound rewards without a payout and queue one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks the reward, requires `ready_for_payout`, rechecks the verified account, copies the provider and destination into one durable `payouts` row, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
 
-The provider and destination become sticky on first claim. Changing `PAYMENT_DRIVER`, replacing the customer's account, or changing the fake scenario later cannot redirect an existing attempt. The reward's stable reference is reused by both providers; the fake stores accepted effects atomically in Redis, while Paystack receives the same reference for initiation and verification. Queue uniqueness and overlap locks reduce repeated work, while the PostgreSQL claim and attempt uniqueness are the durable defenses.
+The provider and destination become sticky on first claim. Changing `PAYMENT_DRIVER`, replacing the customer's account, or changing the fake scenario later cannot redirect an existing payout. Both providers receive the reward's stable reference when initiation starts. The fake stores an accepted effect atomically in Redis and returns that same effect if its gateway sees the request again; Paystack receives one initiation call, and only a matching signed callback can later change a non-final Paystack payout. Queue uniqueness and overlap locks reduce repeated work, while the PostgreSQL claim and unique `payouts.cashback_reward_id` constraint are the durable defenses.
 
 The four server-controlled fake transfer scenarios map as follows:
 
-| `FAKE_TRANSFER_SCENARIO` | Attempt fact | Reward state | Fake effect created |
+| `FAKE_TRANSFER_SCENARIO` | Payout fact | Reward state | Fake effect created |
 | --- | --- | --- | --- |
 | `success` | `succeeded` | `paid` | yes |
 | `pending` | `pending` | `pending` | yes |
 | `insufficient_funds` | `insufficient_funds` | `awaiting_funds` | no |
 | `permanent_failure` | `permanent_rejection` | `requires_attention` | no |
 
-A created fake effect deliberately has no TTL, so a later scenario change cannot erase or replace its transfer identity. The insufficient-funds outcome records its observed zero balance, but the processor does not mistake an advisory balance read for a reservation. The signed Paystack callback above may finalize a matching real-adapter attempt, and the first unresolved result requests support. There is still no automatic retry or scheduled reconciliation: `pending`, `processing`, `awaiting_funds`, and `requires_attention` remain durable operational facts.
+A created fake effect deliberately has no TTL, so a later scenario change cannot erase or replace its transfer identity. Its saved status does not later change: the Fake has no callback or status-polling flow. The insufficient-funds outcome records its observed zero balance, but the processor does not mistake an advisory balance read for a reservation. The signed Paystack callback above may finalize a matching real-adapter payout, and the first unresolved result requests support. There is still no automatic retry or scheduled reconciliation: `pending`, `processing`, `awaiting_funds`, and `requires_attention` remain durable operational facts.
 
-The project seeders create no cashback rewards, payout accounts, attempts, or queued cashback listeners, so this schema change has no historical reward rows or listener payloads to migrate. Restart long-lived workers after placing the new code so they load the renamed listener classes.
+The project seeders create the achievement and badge catalogues plus one customer user. They create no cashback rewards, payout accounts, payouts, webhook receipts, or queued jobs. The one-payout migration therefore deliberately removes the unused `payout_attempts` table and creates `payouts` rather than copying financial history. Do not apply this destructive migration to a database that has payout or receipt history; stop and design a data-preserving migration for that different boundary.
+
+The four schema files have a required order: remove the old receipt link, drop `payout_attempts`, create `payouts`, then add the new receipt link. Put the service in maintenance, drain incompatible queued payout/support payloads, and stop web, scheduler, and Horizon processes before running the complete migration batch. No application process may use one of the intermediate schemas. Start every process with the matching new code only after all four files succeed. The two existing payout wake-up listener class names remain unchanged.
 
 For future ready rewards whose normal event wake-up is missed, run the bounded recovery scan manually:
 
@@ -490,7 +492,7 @@ The route requires `cashback-rewards:read` and a customer identity. It returns a
 }
 ```
 
-Provider ownership, stable references, recipient codes, attempt rows, balance observations, and diagnostics are intentionally absent from this customer response.
+Provider ownership, stable references, recipient codes, payout rows, balance observations, and diagnostics are intentionally absent from this customer response.
 
 Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, cashback clawbacks, and automatic payout recovery are not part of this milestone.
 

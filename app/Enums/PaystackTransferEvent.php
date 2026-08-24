@@ -19,33 +19,33 @@ enum PaystackTransferEvent: string
         };
     }
 
-    public function newAttemptStatus(): PayoutAttemptStatus
+    public function payoutStatus(): PayoutStatus
     {
         return match ($this) {
-            self::Succeeded => PayoutAttemptStatus::Succeeded,
-            self::Failed => PayoutAttemptStatus::Failed,
-            self::Reversed => PayoutAttemptStatus::Reversed,
+            self::Succeeded => PayoutStatus::Succeeded,
+            self::Failed => PayoutStatus::Failed,
+            self::Reversed => PayoutStatus::Reversed,
         };
     }
 
-    public function canChangeAttemptFrom(PayoutAttemptStatus $status): bool
+    public function canChangePayoutFrom(PayoutStatus $status): bool
     {
         /*
          * Started, Ambiguous, Pending, and OtpRequired do not have a final result,
-         * so any final callback may change them. A successful payment may only be
+         * so any final callback may change them. A successful transfer may only be
          * reversed. Later callbacks cannot change any other result.
          */
         return match ($status) {
-            PayoutAttemptStatus::Started,
-            PayoutAttemptStatus::Ambiguous,
-            PayoutAttemptStatus::Pending,
-            PayoutAttemptStatus::OtpRequired => true,
-            PayoutAttemptStatus::Succeeded => $this === self::Reversed,
-            PayoutAttemptStatus::InsufficientFunds,
-            PayoutAttemptStatus::RetryableRejection,
-            PayoutAttemptStatus::PermanentRejection,
-            PayoutAttemptStatus::Failed,
-            PayoutAttemptStatus::Reversed => false,
+            PayoutStatus::Started,
+            PayoutStatus::Ambiguous,
+            PayoutStatus::Pending,
+            PayoutStatus::OtpRequired => true,
+            PayoutStatus::Succeeded => $this === self::Reversed,
+            PayoutStatus::InsufficientFunds,
+            PayoutStatus::RetryableRejection,
+            PayoutStatus::PermanentRejection,
+            PayoutStatus::Failed,
+            PayoutStatus::Reversed => false,
         };
     }
 }

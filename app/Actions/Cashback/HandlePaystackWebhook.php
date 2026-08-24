@@ -10,11 +10,11 @@ use App\Enums\CashbackRewardStatus;
 use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Enums\PaystackTransferEvent;
 use App\Enums\ProviderWebhookReceiptResult;
 use App\Models\CashbackReward;
-use App\Models\PayoutAttempt;
+use App\Models\Payout;
 use App\Models\ProviderWebhookReceipt;
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\DB;
@@ -41,7 +41,7 @@ final readonly class HandlePaystackWebhook
      */
     private const int EVENT_TYPE_MAX_BYTES = 100;
 
-    private const int PAYMENT_IDENTITY_MAX_BYTES = 255;
+    private const int TRANSFER_IDENTITY_MAX_BYTES = 255;
 
     public function __construct(
         private VerifyPaystackWebhookSignature $verifyWebhookSignature,
@@ -130,7 +130,7 @@ final readonly class HandlePaystackWebhook
         if ($transferData instanceof stdClass) {
             $receipt->provider_reference = $this->readPrintableText(
                 $this->readProperty($transferData, 'reference'),
-                self::PAYMENT_IDENTITY_MAX_BYTES,
+                self::TRANSFER_IDENTITY_MAX_BYTES,
             );
         }
 
@@ -146,7 +146,7 @@ final readonly class HandlePaystackWebhook
 
         $providerReference = $this->readPrintableText(
             $this->readProperty($transferData, 'reference'),
-            self::PAYMENT_IDENTITY_MAX_BYTES,
+            self::TRANSFER_IDENTITY_MAX_BYTES,
         );
         $receipt->provider_reference = $providerReference;
 
@@ -172,11 +172,11 @@ final readonly class HandlePaystackWebhook
 
         $transferCode = $this->readPrintableText(
             $this->readProperty($transferData, 'transfer_code'),
-            self::PAYMENT_IDENTITY_MAX_BYTES,
+            self::TRANSFER_IDENTITY_MAX_BYTES,
         );
         $recipientCode = $this->readPrintableText(
             $this->readProperty($recipientData, 'recipient_code'),
-            self::PAYMENT_IDENTITY_MAX_BYTES,
+            self::TRANSFER_IDENTITY_MAX_BYTES,
         );
         $amountMinor = $this->readProperty($transferData, 'amount');
 
@@ -205,8 +205,8 @@ final readonly class HandlePaystackWebhook
         #[SensitiveParameter] PaystackTransferCallback $callback,
     ): RecordedPaystackWebhook {
         /*
-         * Payment processing also locks the reward before the attempt. Using the
-         * same order stops payment processing and the webhook from waiting on each
+         * Payout processing also locks the reward before the payout. Using the
+         * same order stops payout processing and the webhook from waiting on each
          * other.
          */
         $reward = CashbackReward::query()
@@ -218,68 +218,67 @@ final readonly class HandlePaystackWebhook
             return $this->saveReceiptResult($receipt, ProviderWebhookReceiptResult::NotFound);
         }
 
-        $attempt = PayoutAttempt::query()
+        $payout = Payout::query()
             ->where('cashback_reward_id', $reward->id)
-            ->orderByDesc('attempt_number')
             ->lockForUpdate()
             ->first();
 
-        if ($attempt === null) {
+        if ($payout === null) {
             return $this->saveReceiptResult($receipt, ProviderWebhookReceiptResult::NotFound);
         }
 
         /*
          * A valid signature shows that the callback was signed with our Paystack
-         * secret. It does not say which local payment it belongs to, so match every
-         * payment detail.
+         * secret. It does not say which local payout it belongs to, so match the
+         * reward, payout, and provider transfer details.
          */
-        if (! $this->callbackMatchesPayment($reward, $attempt, $callback)) {
+        if (! $this->callbackMatchesPayout($reward, $payout, $callback)) {
             return $this->saveReceiptResult($receipt, ProviderWebhookReceiptResult::Mismatch);
         }
 
-        $receipt->payout_attempt_id = $attempt->id;
-        $oldAttemptStatus = $attempt->status;
+        $receipt->payout_id = $payout->id;
+        $oldPayoutStatus = $payout->status;
         $supportRequest = null;
         $receiptResult = ProviderWebhookReceiptResult::Unchanged;
 
         /*
-         * The reward and attempt must describe the same outcome. If they do not,
+         * The reward and payout must describe the same outcome. If they do not,
          * leave both unchanged rather than guess which row is right. Even when they
-         * agree, do not let a late callback reopen a finished attempt.
+         * agree, do not let a late callback reopen a finished payout.
          */
-        if ($reward->status === CashbackRewardStatus::forAttempt($attempt->status)
-            && $callback->event->canChangeAttemptFrom($attempt->status)) {
+        if ($reward->status === CashbackRewardStatus::forPayout($payout->status)
+            && $callback->event->canChangePayoutFrom($payout->status)) {
             $callbackTime = now();
             [$errorCode, $errorMessage] = $this->errorForEvent($callback->event);
-            $newAttemptStatus = $callback->event->newAttemptStatus();
+            $newPayoutStatus = $callback->event->payoutStatus();
 
-            $attempt->fill([
-                'status' => $newAttemptStatus,
+            $payout->fill([
+                'status' => $newPayoutStatus,
                 'provider_transfer_code' => $callback->transferCode,
                 'provider_error_code' => $errorCode?->value,
                 'provider_error_message' => $errorMessage,
-                'succeeded_at' => $newAttemptStatus === PayoutAttemptStatus::Succeeded
-                    ? ($attempt->succeeded_at ?? $callbackTime)
-                    : $attempt->succeeded_at,
-                'reversed_at' => $newAttemptStatus === PayoutAttemptStatus::Reversed
+                'succeeded_at' => $newPayoutStatus === PayoutStatus::Succeeded
+                    ? ($payout->succeeded_at ?? $callbackTime)
+                    : $payout->succeeded_at,
+                'reversed_at' => $newPayoutStatus === PayoutStatus::Reversed
                     ? $callbackTime
                     : null,
-                'completed_at' => $attempt->completed_at ?? $callbackTime,
+                'completed_at' => $payout->completed_at ?? $callbackTime,
             ]);
 
             $reward->fill([
-                'status' => $newAttemptStatus === PayoutAttemptStatus::Succeeded
+                'status' => $newPayoutStatus === PayoutStatus::Succeeded
                     ? CashbackRewardStatus::Paid
                     : CashbackRewardStatus::RequiresAttention,
                 'last_error_code' => $errorCode?->value,
                 'last_error_message' => $errorMessage,
-                'paid_at' => $newAttemptStatus === PayoutAttemptStatus::Succeeded
+                'paid_at' => $newPayoutStatus === PayoutStatus::Succeeded
                     ? $callbackTime
                     : null,
             ]);
 
-            $supportRequest = $this->requestPayoutSupport->markWhileLocked($reward, $attempt);
-            $attempt->save();
+            $supportRequest = $this->requestPayoutSupport->markWhileLocked($reward, $payout);
+            $payout->save();
             $reward->save();
             $receiptResult = ProviderWebhookReceiptResult::Applied;
         }
@@ -292,31 +291,31 @@ final readonly class HandlePaystackWebhook
             eventType: $receipt->event_type,
             result: $receiptResult,
             cashbackRewardId: $reward->id,
-            payoutAttemptId: $attempt->id,
-            oldAttemptStatus: $oldAttemptStatus,
-            newAttemptStatus: $attempt->status,
+            payoutId: $payout->id,
+            oldPayoutStatus: $oldPayoutStatus,
+            newPayoutStatus: $payout->status,
             rewardStatus: $reward->status,
             correlationId: $reward->correlation_id,
             supportRequest: $supportRequest,
         );
     }
 
-    private function callbackMatchesPayment(
+    private function callbackMatchesPayout(
         #[SensitiveParameter] CashbackReward $reward,
-        #[SensitiveParameter] PayoutAttempt $attempt,
+        #[SensitiveParameter] Payout $payout,
         #[SensitiveParameter] PaystackTransferCallback $callback,
     ): bool {
         return $reward->provider === PaymentProvider::Paystack
-            && $attempt->provider === PaymentProvider::Paystack
+            && $payout->provider === PaymentProvider::Paystack
             && $reward->provider_reference === $callback->providerReference
-            && $attempt->provider_reference === $callback->providerReference
-            && $attempt->provider_recipient_code === $callback->recipientCode
+            && $payout->provider_reference === $callback->providerReference
+            && $payout->provider_recipient_code === $callback->recipientCode
             && $reward->amount_minor === $callback->amountMinor
-            && $attempt->amount_minor === $callback->amountMinor
+            && $payout->amount_minor === $callback->amountMinor
             && $reward->getRawOriginal('currency') === Currency::Ngn->value
-            && $attempt->getRawOriginal('currency') === Currency::Ngn->value
-            && ($attempt->provider_transfer_code === null
-                || $attempt->provider_transfer_code === $callback->transferCode);
+            && $payout->getRawOriginal('currency') === Currency::Ngn->value
+            && ($payout->provider_transfer_code === null
+                || $payout->provider_transfer_code === $callback->transferCode);
     }
 
     /** @return array{CashbackTransferErrorCode|null, string|null} */
@@ -347,9 +346,9 @@ final readonly class HandlePaystackWebhook
             eventType: $receipt->event_type,
             result: $result,
             cashbackRewardId: null,
-            payoutAttemptId: null,
-            oldAttemptStatus: null,
-            newAttemptStatus: null,
+            payoutId: null,
+            oldPayoutStatus: null,
+            newPayoutStatus: null,
             rewardStatus: null,
             correlationId: null,
             supportRequest: null,
@@ -363,9 +362,9 @@ final readonly class HandlePaystackWebhook
             'event_type' => $recordedWebhook->eventType,
             'result' => $recordedWebhook->result->value,
             'cashback_reward_id' => $recordedWebhook->cashbackRewardId,
-            'payout_attempt_id' => $recordedWebhook->payoutAttemptId,
-            'old_attempt_status' => $recordedWebhook->oldAttemptStatus?->value,
-            'new_attempt_status' => $recordedWebhook->newAttemptStatus?->value,
+            'payout_id' => $recordedWebhook->payoutId,
+            'old_payout_status' => $recordedWebhook->oldPayoutStatus?->value,
+            'new_payout_status' => $recordedWebhook->newPayoutStatus?->value,
             'reward_status' => $recordedWebhook->rewardStatus?->value,
             'correlation_id' => $recordedWebhook->correlationId,
         ];

@@ -20,17 +20,17 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * @property string $body_hash
  * @property string|null $event_type
  * @property string|null $provider_reference
- * @property int|null $payout_attempt_id
+ * @property int|null $payout_id
  * @property ProviderWebhookReceiptResult $result
  * @property CarbonImmutable $received_at
- * @property-read PayoutAttempt|null $payoutAttempt
+ * @property-read Payout|null $payout
  */
 #[Fillable([
     'provider',
     'body_hash',
     'event_type',
     'provider_reference',
-    'payout_attempt_id',
+    'payout_id',
     'result',
     'received_at',
 ])]
@@ -42,10 +42,10 @@ class ProviderWebhookReceipt extends Model
 
     public $timestamps = false;
 
-    /** @return BelongsTo<PayoutAttempt, $this> */
-    public function payoutAttempt(): BelongsTo
+    /** @return BelongsTo<Payout, $this> */
+    public function payout(): BelongsTo
     {
-        return $this->belongsTo(PayoutAttempt::class);
+        return $this->belongsTo(Payout::class);
     }
 
     /** @return array<string, string> */
