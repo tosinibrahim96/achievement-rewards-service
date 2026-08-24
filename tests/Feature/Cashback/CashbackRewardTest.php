@@ -3,13 +3,17 @@
 declare(strict_types=1);
 
 use App\Actions\Badges\EvaluateBadges;
+use App\Actions\Cashback\CreateCashbackReward;
+use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Actions\Purchases\RecordPurchase;
+use App\Data\Payouts\RegisterPayoutAccountInput;
 use App\Data\Purchases\RecordPurchaseInput;
 use App\Domain\Money\Money;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\Currency;
 use App\Events\BadgeUnlocked;
 use App\Models\CashbackReward;
+use App\Models\PayoutAccount;
 use App\Models\User;
 use App\Models\UserBadge;
 use Carbon\CarbonImmutable;
@@ -26,6 +30,7 @@ uses(DatabaseMigrations::class);
 
 beforeEach(function (): void {
     $this->seed([AchievementCatalogueSeeder::class, BadgeCatalogueSeeder::class]);
+    config()->set('payments.fake.payout_account_scenario', 'success');
 });
 
 it('creates coherent cashback reward factory records', function (): void {
@@ -65,6 +70,75 @@ it('creates one snapshotted reward for every newly unlocked badge', function ():
                 && preg_match('/\A[a-z0-9_-]{16,50}\z/', $reward->provider_reference) === 1,
         ))->toBeTrue();
 });
+
+it('creates every account-first badge reward ready before its listener runs', function (): void {
+    Event::fake([BadgeUnlocked::class]);
+    $user = User::factory()->create();
+    PayoutAccount::factory()->for($user)->create();
+    BadgeTestData::giveAchievements($user, 8);
+
+    app(EvaluateBadges::class)->handle($user);
+
+    $rewards = CashbackReward::query()->whereBelongsTo($user)->orderBy('id')->get();
+
+    expect($rewards)->toHaveCount(3)
+        ->and($rewards->every(
+            static fn (CashbackReward $reward): bool => $reward->status === CashbackRewardStatus::ReadyForPayout,
+        ))->toBeTrue();
+    Event::assertDispatchedTimes(BadgeUnlocked::class, 3);
+});
+
+it('changes every badge-first reward to ready inside account registration', function (): void {
+    Event::fake();
+    $user = User::factory()->create();
+    BadgeTestData::giveAchievements($user, 8);
+    app(EvaluateBadges::class)->handle($user);
+
+    expect(CashbackReward::query()->whereBelongsTo($user)->pluck('status')->every(
+        static fn (CashbackRewardStatus $status): bool => $status === CashbackRewardStatus::AwaitingPayoutAccount,
+    ))->toBeTrue();
+
+    app(RegisterPayoutAccount::class)->handle(
+        $user,
+        new RegisterPayoutAccountInput('0000001234', '057'),
+    );
+
+    expect(CashbackReward::query()->whereBelongsTo($user)->pluck('status')->every(
+        static fn (CashbackRewardStatus $status): bool => $status === CashbackRewardStatus::ReadyForPayout,
+    ))->toBeTrue();
+});
+
+it('rejects direct reward creation outside a caller-owned transaction', function (): void {
+    $userBadge = UserBadge::factory()->create();
+
+    expect(fn () => app(CreateCashbackReward::class)->handle($userBadge))
+        ->toThrow(
+            LogicException::class,
+            'Cashback reward creation must run inside a database transaction.',
+        )
+        ->and(CashbackReward::query()->where('user_badge_id', $userBadge->id)->exists())
+        ->toBeFalse();
+});
+
+it('returns a replayed reward without resetting its lifecycle', function (
+    CashbackRewardStatus $status,
+): void {
+    $userBadge = UserBadge::factory()->create();
+    $reward = CashbackReward::factory()
+        ->for($userBadge->user, 'user')
+        ->for($userBadge, 'userBadge')
+        ->create(['status' => $status]);
+    $replayed = DB::transaction(
+        fn (): CashbackReward => app(CreateCashbackReward::class)->handle($userBadge),
+    );
+
+    expect($replayed->is($reward))->toBeTrue()
+        ->and($replayed->status)->toBe($status)
+        ->and(CashbackReward::query()->where('user_badge_id', $userBadge->id)->count())->toBe(1);
+})->with([
+    CashbackRewardStatus::Processing,
+    CashbackRewardStatus::Paid,
+]);
 
 it('preserves existing reward snapshots when configuration changes', function (): void {
     $firstUser = User::factory()->create();

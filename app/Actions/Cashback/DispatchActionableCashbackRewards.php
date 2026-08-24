@@ -39,7 +39,7 @@ final readonly class DispatchActionableCashbackRewards
         $candidates = 0;
         $query = CashbackReward::query()
             ->select('cashback_rewards.id')
-            ->where('cashback_rewards.status', CashbackRewardStatus::AwaitingPayoutAccount)
+            ->where('cashback_rewards.status', CashbackRewardStatus::ReadyForPayout)
             ->whereNull('cashback_rewards.provider')
             ->whereDoesntHave('payoutAttempts')
             ->whereHas(

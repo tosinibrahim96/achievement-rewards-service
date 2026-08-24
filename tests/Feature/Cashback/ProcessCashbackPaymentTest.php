@@ -79,12 +79,13 @@ final class InspectingCashbackTransferGateway implements CashbackTransferGateway
 function payableCashbackReward(): array
 {
     $user = User::factory()->create();
+    $payoutAccount = PayoutAccount::factory()->for($user)->create();
     $userBadge = UserBadge::factory()->for($user)->create();
     $reward = CashbackReward::factory()
         ->for($user)
         ->for($userBadge, 'userBadge')
+        ->readyForPayout()
         ->create();
-    $payoutAccount = PayoutAccount::factory()->for($user)->create();
 
     return [$reward, $payoutAccount];
 }
@@ -233,6 +234,78 @@ it('leaves a reward untouched when no verified payout account exists', function 
         ->and($reward->payoutAttempts()->count())->toBe(0);
 });
 
+it('does not claim an awaiting reward even when an account was inserted later', function (): void {
+    $user = User::factory()->create();
+    PayoutAccount::factory()->for($user)->create();
+    $reward = CashbackReward::factory()
+        ->for($user)
+        ->for(UserBadge::factory()->for($user), 'userBadge')
+        ->create();
+    $gateway = new InspectingCashbackTransferGateway(
+        static function (CashbackTransferRequest $request): void {},
+        new CashbackTransferResult(PayoutAttemptStatus::Succeeded, 'TRF_NOT_CALLED'),
+    );
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
+
+    expect($action->handle($reward->id))->toBeNull()
+        ->and($reward->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
+        ->and($gateway->initiationCalls)->toBe(0)
+        ->and(PayoutAttempt::query()->count())->toBe(0);
+});
+
+it('does not claim a ready reward when its verified account is missing', function (): void {
+    $reward = CashbackReward::factory()->readyForPayout()->create();
+    $gateway = new InspectingCashbackTransferGateway(
+        static function (CashbackTransferRequest $request): void {},
+        new CashbackTransferResult(PayoutAttemptStatus::Succeeded, 'TRF_NOT_CALLED'),
+    );
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
+
+    expect($action->handle($reward->id))->toBeNull()
+        ->and($reward->refresh()->status)->toBe(CashbackRewardStatus::ReadyForPayout)
+        ->and($gateway->initiationCalls)->toBe(0)
+        ->and(PayoutAttempt::query()->count())->toBe(0);
+});
+
+it('does not claim a ready reward with contradictory payout history', function (
+    string $contradiction,
+): void {
+    [$reward, $account] = payableCashbackReward();
+
+    if ($contradiction === 'provider') {
+        $reward->update(['provider' => PaymentProvider::Fake]);
+    } else {
+        PayoutAttempt::factory()->create([
+            'cashback_reward_id' => $reward->id,
+            'payout_account_id' => $account->id,
+        ]);
+    }
+
+    $attemptCount = PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->count();
+    $gateway = new InspectingCashbackTransferGateway(
+        static function (CashbackTransferRequest $request): void {},
+        new CashbackTransferResult(PayoutAttemptStatus::Succeeded, 'TRF_NOT_CALLED'),
+    );
+    $action = new ProcessCashbackPayment(
+        new PaymentProviderRegistry([], [$gateway], 'fake'),
+        app(RequestCashbackPayoutSupport::class),
+    );
+
+    expect($action->handle($reward->id))->toBeNull()
+        ->and($gateway->initiationCalls)->toBe(0)
+        ->and(PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->count())
+        ->toBe($attemptCount);
+})->with([
+    'provider already bound' => ['provider'],
+    'attempt already exists' => ['attempt'],
+]);
+
 it('treats duplicate processing and every non-claimable state as a no-op', function (
     CashbackRewardStatus $status,
 ): void {
@@ -242,6 +315,7 @@ it('treats duplicate processing and every non-claimable state as a no-op', funct
     expect(app(ProcessCashbackPayment::class)->handle($reward->id))->toBeNull()
         ->and(PayoutAttempt::query()->count())->toBe(0);
 })->with([
+    CashbackRewardStatus::AwaitingPayoutAccount,
     CashbackRewardStatus::Processing,
     CashbackRewardStatus::Pending,
     CashbackRewardStatus::AwaitingFunds,
@@ -348,7 +422,7 @@ it('rejects invalid fake configuration before claiming a reward', function (): v
 
     $reward->refresh();
 
-    expect($reward->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
+    expect($reward->status)->toBe(CashbackRewardStatus::ReadyForPayout)
         ->and($reward->provider)->toBeNull()
         ->and($reward->last_attempted_at)->toBeNull()
         ->and(PayoutAttempt::query()->count())->toBe(0);

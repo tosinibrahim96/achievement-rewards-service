@@ -43,6 +43,7 @@ function createActionableWakeUpReward(User $user, array $attributes = []): Cashb
     return CashbackReward::factory()
         ->for($user)
         ->for($userBadge, 'userBadge')
+        ->readyForPayout()
         ->create($attributes);
 }
 
@@ -105,7 +106,7 @@ it('treats duplicate badge events as user wake-ups and repairs every missed rewa
     expect(queuedCashbackRewardIds())->toBe($expectedIds);
 });
 
-it('uses payout account verification to wake every waiting reward for its user', function (): void {
+it('uses payout account verification to wake every ready reward for its user', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);
     $user = User::factory()->create();
     $expectedIds = collect([
@@ -120,10 +121,13 @@ it('uses payout account verification to wake every waiting reward for its user',
     expect(queuedCashbackRewardIds())->toBe($expectedIds);
 });
 
-it('wakes a reward when its verified payout account arrives after the badge', function (): void {
+it('does not use an account event to repair a contradictory awaiting reward', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);
     $user = User::factory()->create();
-    $reward = createActionableWakeUpReward($user);
+    $reward = CashbackReward::factory()
+        ->for($user)
+        ->for(UserBadge::factory()->for($user), 'userBadge')
+        ->create();
 
     BadgeUnlocked::dispatch('Beginner', $user);
 
@@ -132,10 +136,8 @@ it('wakes a reward when its verified payout account arrives after the badge', fu
     $payoutAccount = PayoutAccount::factory()->for($user)->create();
     PayoutAccountVerified::dispatch($payoutAccount);
 
-    Queue::assertPushed(
-        ProcessCashbackPaymentJob::class,
-        static fn (ProcessCashbackPaymentJob $job): bool => $job->cashbackRewardId === $reward->id,
-    );
+    Queue::assertNotPushed(ProcessCashbackPaymentJob::class);
+    expect($reward->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount);
 });
 
 it('does not dispatch payment work from a badge event before its transaction commits', function (): void {
@@ -200,11 +202,15 @@ it('runs the assembled queued wake-up and fake payment pipeline with real redis 
     }
 });
 
-it('dispatches only unbound unattempted waiting rewards with a verified account', function (): void {
+it('dispatches only unbound unattempted ready rewards with a verified account', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);
     $user = User::factory()->create();
     $payoutAccount = PayoutAccount::factory()->for($user)->create();
     $eligible = createActionableWakeUpReward($user);
+
+    createActionableWakeUpReward($user, [
+        'status' => CashbackRewardStatus::AwaitingPayoutAccount,
+    ]);
 
     createActionableWakeUpReward(
         $user,
@@ -219,7 +225,7 @@ it('dispatches only unbound unattempted waiting rewards with a verified account'
 
     foreach (array_filter(
         CashbackRewardStatus::cases(),
-        static fn (CashbackRewardStatus $status): bool => $status !== CashbackRewardStatus::AwaitingPayoutAccount,
+        static fn (CashbackRewardStatus $status): bool => $status !== CashbackRewardStatus::ReadyForPayout,
     ) as $status) {
         createActionableWakeUpReward($user, ['status' => $status]);
     }
@@ -258,6 +264,33 @@ it('scans all users in deterministic bounded id chunks and keeps the job payload
     expect(Queue::pushed(ProcessCashbackPaymentJob::class)->every(
         static fn (ProcessCashbackPaymentJob $job): bool => collect(get_object_vars($job))
             ->doesntContain(static fn (mixed $value): bool => $value instanceof Model),
+    ))->toBeTrue();
+
+    $frameworkAndExecutionFields = [
+        'connection',
+        'queue',
+        'messageGroup',
+        'deduplicator',
+        'debounceOwner',
+        'uniqueLockOwner',
+        'delay',
+        'afterCommit',
+        'middleware',
+        'chained',
+        'chainConnection',
+        'chainQueue',
+        'chainCatchCallbacks',
+        'job',
+        'timeout',
+        'uniqueFor',
+    ];
+
+    expect(Queue::pushed(ProcessCashbackPaymentJob::class)->every(
+        static fn (ProcessCashbackPaymentJob $job): bool => array_values(array_diff(
+            array_keys(get_object_vars($job)),
+            $frameworkAndExecutionFields,
+        )) === ['cashbackRewardId']
+            && is_int($job->cashbackRewardId),
     ))->toBeTrue();
 });
 
@@ -300,11 +333,11 @@ it('releases the unique lock and rethrows when the queue push fails', function (
     (new UniqueLock($cache))->release(new ProcessCashbackPaymentJob($cashbackRewardId));
 });
 
-it('rejects an invalid unbounded chunk size', function (): void {
+it('rejects an invalid unbounded chunk size', function (int $chunkSize): void {
     expect(fn () => app(DispatchActionableCashbackRewards::class)
-        ->dispatchForAllUsers(chunkSize: 0))
+        ->dispatchForAllUsers(chunkSize: $chunkSize))
         ->toThrow(InvalidArgumentException::class);
-});
+})->with([0, -1]);
 
 it('reports the bounded activation count and remains safe to rerun', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);

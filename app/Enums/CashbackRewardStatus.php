@@ -10,6 +10,7 @@ namespace App\Enums;
 enum CashbackRewardStatus: string
 {
     case AwaitingPayoutAccount = 'awaiting_payout_account';
+    case ReadyForPayout = 'ready_for_payout';
     case AwaitingFunds = 'awaiting_funds';
     case Pending = 'pending';
     case Processing = 'processing';

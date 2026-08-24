@@ -703,14 +703,15 @@ it('does not reopen conclusive failed reversed or pre-creation outcomes', functi
 it('lets a real callback win before the older initiation response is stored', function (): void {
     Log::spy();
     $user = User::factory()->create();
-    $reward = CashbackReward::factory()
-        ->for($user)
-        ->for(UserBadge::factory()->for($user), 'userBadge')
-        ->create();
     PayoutAccount::factory()->for($user)->create([
         'provider' => PaymentProvider::Paystack,
         'provider_recipient_code' => 'RCP_RACE_CUSTOMER',
     ]);
+    $reward = CashbackReward::factory()
+        ->for($user)
+        ->for(UserBadge::factory()->for($user), 'userBadge')
+        ->readyForPayout()
+        ->create();
     $gateway = new CallbackWinningPaystackGateway(
         function (CashbackTransferRequest $request): void {
             $payload = [

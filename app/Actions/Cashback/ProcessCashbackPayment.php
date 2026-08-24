@@ -124,7 +124,7 @@ final readonly class ProcessCashbackPayment
                 ->first();
 
             if ($reward === null
-                || $reward->status !== CashbackRewardStatus::AwaitingPayoutAccount
+                || $reward->status !== CashbackRewardStatus::ReadyForPayout
                 || $reward->provider !== null
                 || $reward->payoutAttempts()->exists()) {
                 return null;
@@ -132,6 +132,7 @@ final readonly class ProcessCashbackPayment
 
             $payoutAccount = PayoutAccount::query()
                 ->where('user_id', $reward->user_id)
+                ->whereNotNull('verified_at')
                 ->lockForUpdate()
                 ->first();
 

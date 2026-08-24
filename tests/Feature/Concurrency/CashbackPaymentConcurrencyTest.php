@@ -41,12 +41,13 @@ beforeEach(function (): void {
 
 it('creates one durable claim and one process-visible fake effect when workers compete', function (): void {
     $user = User::factory()->create();
+    PayoutAccount::factory()->for($user)->create();
     $userBadge = UserBadge::factory()->for($user)->create();
     $reward = CashbackReward::factory()
         ->for($user)
         ->for($userBadge, 'userBadge')
+        ->readyForPayout()
         ->create();
-    PayoutAccount::factory()->for($user)->create();
     $effects = app(FakeTransferEffectRegistry::class);
     $effects->forget($reward->provider_reference);
 
@@ -120,12 +121,13 @@ it('atomically creates one authoritative fake effect when gateways compete direc
 it('snapshots either complete destination when account replacement races the first claim', function (): void {
     Event::fake([PayoutAccountVerified::class]);
     $user = User::factory()->create();
+    $account = PayoutAccount::factory()->for($user)->create();
     $userBadge = UserBadge::factory()->for($user)->create();
     $reward = CashbackReward::factory()
         ->for($user)
         ->for($userBadge, 'userBadge')
+        ->readyForPayout()
         ->create();
-    $account = PayoutAccount::factory()->for($user)->create();
     $oldRecipientCode = $account->provider_recipient_code;
     $replacementInput = new RegisterPayoutAccountInput('0000004321', '058');
     $newRecipientCode = app(FakeTransferRecipientGateway::class)

@@ -7,6 +7,7 @@ use App\Enums\Currency;
 use App\Enums\TokenAbility;
 use App\Models\Badge;
 use App\Models\CashbackReward;
+use App\Models\PayoutAccount;
 use App\Models\User;
 use App\Models\UserBadge;
 use Carbon\CarbonImmutable;
@@ -66,6 +67,62 @@ it('requires authentication the cashback read ability and a customer identity', 
     )
         ->assertForbidden()
         ->assertJsonPath('code', 'forbidden');
+});
+
+it('shows awaiting payout account when the owner has no destination', function (): void {
+    $customer = User::factory()->create();
+    $reward = createCashbackRewardFor($customer, 'Account Needed');
+
+    $response = $this->getJson(
+        '/api/me/cashback-rewards',
+        cashbackRewardApiHeaders($customer, [TokenAbility::CashbackRewardsRead->value]),
+    )->assertOk();
+
+    expect(array_keys($response->json('data.0')))->toBe([
+        'id',
+        'badge_name',
+        'amount_minor',
+        'currency',
+        'status',
+        'created_at',
+        'updated_at',
+        'paid_at',
+    ])->and($response->json('data.0.status'))
+        ->toBe(CashbackRewardStatus::AwaitingPayoutAccount->value)
+        ->and($response->getContent())->not->toContain($reward->provider_reference);
+});
+
+it('shows ready for payout without exposing its verified destination', function (): void {
+    $customer = User::factory()->create();
+    $account = PayoutAccount::factory()->for($customer)->create([
+        'provider_recipient_code' => 'RCP_PRIVATE_READY_DESTINATION',
+        'account_last_four' => '8642',
+    ]);
+    $reward = createCashbackRewardFor($customer, 'Destination Ready', [
+        'status' => CashbackRewardStatus::ReadyForPayout,
+    ]);
+
+    $response = $this->getJson(
+        '/api/me/cashback-rewards',
+        cashbackRewardApiHeaders($customer, [TokenAbility::CashbackRewardsRead->value]),
+    )->assertOk();
+
+    expect(array_keys($response->json('data.0')))->toBe([
+        'id',
+        'badge_name',
+        'amount_minor',
+        'currency',
+        'status',
+        'created_at',
+        'updated_at',
+        'paid_at',
+    ])->and($response->json('data.0.status'))
+        ->toBe(CashbackRewardStatus::ReadyForPayout->value)
+        ->and($response->getContent())->not->toContain($reward->provider_reference)
+        ->not->toContain($account->provider_recipient_code)
+        ->not->toContain($account->account_last_four)
+        ->not->toContain('payout_attempt_id')
+        ->not->toContain('last_error');
 });
 
 it('returns the exact safe owner-scoped reward contract in deterministic order', function (): void {

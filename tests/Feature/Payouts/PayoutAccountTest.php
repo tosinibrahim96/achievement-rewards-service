@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Data\Payouts\RegisterPayoutAccountInput;
+use App\Enums\CashbackRewardStatus;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentProviderFailure;
@@ -11,8 +12,11 @@ use App\Events\PayoutAccountVerified;
 use App\Exceptions\Payments\PaymentProviderException;
 use App\Exceptions\Payouts\PayoutAccountConflictException;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
+use App\Models\CashbackReward;
 use App\Models\PayoutAccount;
+use App\Models\PayoutAttempt;
 use App\Models\User;
+use App\Models\UserBadge;
 use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -31,6 +35,15 @@ beforeEach(function (): void {
     config()->set('payments.default', PaymentProvider::Fake->value);
     config()->set('payments.fake.payout_account_scenario', 'success');
 });
+
+/** @param array<string, mixed> $attributes */
+function payoutAccountRewardForTest(User $user, array $attributes = []): CashbackReward
+{
+    return CashbackReward::factory()
+        ->for($user)
+        ->for(UserBadge::factory()->for($user), 'userBadge')
+        ->create($attributes);
+}
 
 it('creates one verified account without retaining the full account number', function (): void {
     Event::fake([PayoutAccountVerified::class]);
@@ -67,6 +80,113 @@ it('creates one verified account without retaining the full account number', fun
 
         return true;
     });
+});
+
+it('makes every clean waiting reward ready in the account save transaction', function (): void {
+    Event::fake([PayoutAccountVerified::class]);
+    $user = User::factory()->create();
+    $rewards = collect(range(1, 3))->map(
+        static fn (): CashbackReward => payoutAccountRewardForTest($user),
+    );
+
+    app(RegisterPayoutAccount::class)->handle(
+        $user,
+        new RegisterPayoutAccountInput('0000001234', '057'),
+    );
+
+    expect($rewards->map(
+        static fn (CashbackReward $reward): CashbackRewardStatus => $reward->refresh()->status,
+    )->all())->toBe([
+        CashbackRewardStatus::ReadyForPayout,
+        CashbackRewardStatus::ReadyForPayout,
+        CashbackRewardStatus::ReadyForPayout,
+    ]);
+    Event::assertDispatchedTimes(PayoutAccountVerified::class, 1);
+});
+
+it('changes only clean waiting rewards when an account is replaced', function (): void {
+    Event::fake([PayoutAccountVerified::class]);
+    $user = User::factory()->create();
+    $account = app(RegisterPayoutAccount::class)->handle(
+        $user,
+        new RegisterPayoutAccountInput('0000001234', '057'),
+    )->payoutAccount;
+    $cleanWaiting = payoutAccountRewardForTest($user);
+    $providerBoundWaiting = payoutAccountRewardForTest($user, [
+        'provider' => PaymentProvider::Fake,
+    ]);
+    $attemptedWaiting = payoutAccountRewardForTest($user);
+    PayoutAttempt::factory()->create([
+        'cashback_reward_id' => $attemptedWaiting->id,
+        'payout_account_id' => $account->id,
+    ]);
+    $unchangedStatuses = [
+        CashbackRewardStatus::ReadyForPayout,
+        CashbackRewardStatus::Processing,
+        CashbackRewardStatus::Pending,
+        CashbackRewardStatus::AwaitingFunds,
+        CashbackRewardStatus::Retrying,
+        CashbackRewardStatus::Paid,
+        CashbackRewardStatus::RequiresAttention,
+    ];
+    $unchanged = collect($unchangedStatuses)->map(
+        static fn (CashbackRewardStatus $status): CashbackReward => payoutAccountRewardForTest(
+            $user,
+            ['status' => $status],
+        ),
+    );
+
+    app(RegisterPayoutAccount::class)->handle(
+        $user,
+        new RegisterPayoutAccountInput('0000009876', '058'),
+    );
+
+    expect($cleanWaiting->refresh()->status)->toBe(CashbackRewardStatus::ReadyForPayout)
+        ->and($providerBoundWaiting->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
+        ->and($attemptedWaiting->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
+        ->and($unchanged->map(
+            static fn (CashbackReward $reward): CashbackRewardStatus => $reward->refresh()->status,
+        )->all())->toBe($unchangedStatuses);
+    Event::assertDispatchedTimes(PayoutAccountVerified::class, 2);
+});
+
+it('rolls back the account and readiness changes together on database failure', function (): void {
+    Event::fake([PayoutAccountVerified::class]);
+    $user = User::factory()->create();
+    $reward = payoutAccountRewardForTest($user);
+    $originalUpdatedAt = $reward->updated_at;
+
+    DB::unprepared(<<<'SQL'
+        CREATE OR REPLACE FUNCTION fail_cashback_reward_readiness_update()
+        RETURNS trigger AS $$
+        BEGIN
+            IF OLD.status = 'awaiting_payout_account' AND NEW.status = 'ready_for_payout' THEN
+                RAISE EXCEPTION 'simulated readiness update failure';
+            END IF;
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql
+        SQL);
+    DB::unprepared(<<<'SQL'
+        CREATE TRIGGER fail_cashback_reward_readiness_update
+        BEFORE UPDATE ON cashback_rewards
+        FOR EACH ROW EXECUTE FUNCTION fail_cashback_reward_readiness_update()
+        SQL);
+
+    try {
+        expect(fn () => app(RegisterPayoutAccount::class)->handle(
+            $user,
+            new RegisterPayoutAccountInput('0000001234', '057'),
+        ))->toThrow(QueryException::class, 'simulated readiness update failure');
+    } finally {
+        DB::unprepared('DROP TRIGGER IF EXISTS fail_cashback_reward_readiness_update ON cashback_rewards');
+        DB::unprepared('DROP FUNCTION IF EXISTS fail_cashback_reward_readiness_update()');
+    }
+
+    expect(PayoutAccount::query()->whereBelongsTo($user)->exists())->toBeFalse()
+        ->and($reward->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
+        ->and($reward->updated_at->equalTo($originalUpdatedAt))->toBeTrue();
+    Event::assertNotDispatched(PayoutAccountVerified::class);
 });
 
 it('replaces the existing account in place and reports the outcome explicitly', function (): void {
