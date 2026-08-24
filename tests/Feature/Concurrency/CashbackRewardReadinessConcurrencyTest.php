@@ -174,7 +174,6 @@ it('converges on one ready reward when either transaction holds the customer loc
             ->and(CashbackReward::query()->whereBelongsTo($user)->count())->toBe(1)
             ->and(PayoutAccount::query()->whereBelongsTo($user)->count())->toBe(1)
             ->and($reward->status)->toBe(CashbackRewardStatus::ReadyForPayout)
-            ->and($reward->provider)->toBeNull()
             ->and(Payout::query()->where('cashback_reward_id', $reward->id)->count())
             ->toBe(0);
 

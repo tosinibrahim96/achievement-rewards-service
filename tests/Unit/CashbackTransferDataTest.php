@@ -124,8 +124,41 @@ it('rejects payout statuses with a missing or unexpected transfer code', functio
     'failed without transfer code' => [PayoutStatus::Failed, null, 'Payout status "failed" requires a transfer code.'],
     'reversed without transfer code' => [PayoutStatus::Reversed, null, 'Payout status "reversed" requires a transfer code.'],
     'insufficient funds with transfer code' => [PayoutStatus::InsufficientFunds, 'TRF_impossible', 'Payout status "insufficient_funds" cannot have a transfer code.'],
-    'retryable rejection with transfer code' => [PayoutStatus::RetryableRejection, 'TRF_impossible', 'Payout status "retryable_rejection" cannot have a transfer code.'],
-    'permanent rejection with transfer code' => [PayoutStatus::PermanentRejection, 'TRF_impossible', 'Payout status "permanent_rejection" cannot have a transfer code.'],
+    'rate limited with transfer code' => [PayoutStatus::RateLimited, 'TRF_impossible', 'Payout status "rate_limited" cannot have a transfer code.'],
+    'rejected with transfer code' => [PayoutStatus::Rejected, 'TRF_impossible', 'Payout status "rejected" cannot have a transfer code.'],
+]);
+
+it('requires the rate limited payout status and error code together', function (): void {
+    $result = new CashbackTransferResult(
+        status: PayoutStatus::RateLimited,
+        errorCode: CashbackTransferErrorCode::RateLimited,
+    );
+
+    expect($result->status)->toBe(PayoutStatus::RateLimited)
+        ->and($result->errorCode)->toBe(CashbackTransferErrorCode::RateLimited);
+});
+
+it('rejects either direction of a rate limited status and error mismatch', function (
+    PayoutStatus $status,
+    ?CashbackTransferErrorCode $errorCode,
+): void {
+    expect(fn () => new CashbackTransferResult(
+        status: $status,
+        errorCode: $errorCode,
+    ))->toThrow(
+        InvalidArgumentException::class,
+        'The "rate_limited" payout status requires the matching error code, and that error code cannot be used with another status.',
+    );
+})->with([
+    'rate limited status without an error code' => [PayoutStatus::RateLimited, null],
+    'rate limited status with another error code' => [
+        PayoutStatus::RateLimited,
+        CashbackTransferErrorCode::ProviderRejected,
+    ],
+    'rate limited error on another status' => [
+        PayoutStatus::Rejected,
+        CashbackTransferErrorCode::RateLimited,
+    ],
 ]);
 
 it('freezes the factual payout status vocabulary', function (): void {
@@ -138,8 +171,8 @@ it('freezes the factual payout status vocabulary', function (): void {
         'pending',
         'succeeded',
         'insufficient_funds',
-        'retryable_rejection',
-        'permanent_rejection',
+        'rate_limited',
+        'rejected',
         'otp_required',
         'failed',
         'reversed',

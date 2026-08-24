@@ -17,6 +17,21 @@ it('uses only the three supported Paystack callback events', function (): void {
     ]);
 });
 
+it('uses only the seven customer-visible cashback reward states', function (): void {
+    expect(array_map(
+        static fn (CashbackRewardStatus $status): string => $status->value,
+        CashbackRewardStatus::cases(),
+    ))->toBe([
+        'awaiting_payout_account',
+        'ready_for_payout',
+        'awaiting_funds',
+        'pending',
+        'processing',
+        'paid',
+        'requires_attention',
+    ]);
+});
+
 it('shows the reward status for every payout status', function (
     PayoutStatus $payoutStatus,
     CashbackRewardStatus $rewardStatus,
@@ -43,12 +58,12 @@ it('shows the reward status for every payout status', function (
         PayoutStatus::InsufficientFunds,
         CashbackRewardStatus::AwaitingFunds,
     ],
-    'temporary rejection needs attention because there is no retry worker' => [
-        PayoutStatus::RetryableRejection,
+    'rate limited payout needs attention' => [
+        PayoutStatus::RateLimited,
         CashbackRewardStatus::RequiresAttention,
     ],
-    'permanent rejection needs attention' => [
-        PayoutStatus::PermanentRejection,
+    'rejected payout needs attention' => [
+        PayoutStatus::Rejected,
         CashbackRewardStatus::RequiresAttention,
     ],
     'OTP request needs attention' => [
@@ -105,14 +120,14 @@ it('allows only callbacks that can still change the payout', function (
         false,
         false,
     ],
-    'temporary rejection accepts no callback' => [
-        PayoutStatus::RetryableRejection,
+    'rate limited payout accepts no callback' => [
+        PayoutStatus::RateLimited,
         false,
         false,
         false,
     ],
-    'permanent rejection accepts no callback' => [
-        PayoutStatus::PermanentRejection,
+    'rejected payout accepts no callback' => [
+        PayoutStatus::Rejected,
         false,
         false,
         false,

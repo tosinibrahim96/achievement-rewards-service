@@ -9,12 +9,13 @@ use Illuminate\Support\Facades\Schema;
 
 uses(DatabaseMigrations::class);
 
-it('applies the four one-payout migrations in order and exposes the final schema', function (): void {
+it('applies the four one-payout migrations before the result cleanup and exposes the current schema', function (): void {
     $migrationNames = [
         '2026_08_24_100000_remove_payout_attempt_id_from_provider_webhook_receipts_table',
         '2026_08_24_100001_drop_payout_attempts_table',
         '2026_08_24_100002_create_payouts_table',
         '2026_08_24_100003_add_payout_id_to_provider_webhook_receipts_table',
+        '2026_08_24_110000_cleanup_payout_results_and_provider_facts',
     ];
 
     expect(DB::table('migrations')
@@ -45,10 +46,11 @@ it('applies the four one-payout migrations in order and exposes the final schema
             'succeeded_at',
             'reversed_at',
             'started_at',
-            'completed_at',
+            'first_result_at',
             'created_at',
             'updated_at',
             'support_alert_requested_at',
+            'balance_observed_at',
         ])->not->toContain('attempt_number')
         ->and(Schema::hasIndex(
             'payouts',
@@ -73,12 +75,22 @@ it('rolls back and reapplies the exact four migrations through their intentional
         },
         $migrationFiles,
     );
+    /** @var Migration $cleanupMigration */
+    $cleanupMigration = require database_path(
+        'migrations/2026_08_24_110000_cleanup_payout_results_and_provider_facts.php',
+    );
     $rolledBackIndexes = [];
+    $cleanupRolledBack = false;
 
     expect(DB::table('payouts')->count())->toBe(0)
         ->and(DB::table('provider_webhook_receipts')->count())->toBe(0);
 
     try {
+        DB::transaction(static function () use ($cleanupMigration): void {
+            $cleanupMigration->down();
+        });
+        $cleanupRolledBack = true;
+
         $migrations[3]->down();
         $rolledBackIndexes[] = 3;
 
@@ -108,11 +120,19 @@ it('rolls back and reapplies the exact four migrations through their intentional
         foreach (array_reverse($rolledBackIndexes) as $index) {
             $migrations[$index]->up();
         }
+
+        if ($cleanupRolledBack) {
+            DB::transaction(static function () use ($cleanupMigration): void {
+                $cleanupMigration->up();
+            });
+        }
     }
 
     expect(Schema::hasTable('payout_attempts'))->toBeFalse()
         ->and(Schema::hasTable('payouts'))->toBeTrue()
         ->and(Schema::hasColumn('payouts', 'attempt_number'))->toBeFalse()
+        ->and(Schema::hasColumn('payouts', 'first_result_at'))->toBeTrue()
+        ->and(Schema::hasColumn('payouts', 'completed_at'))->toBeFalse()
         ->and(Schema::hasColumn('provider_webhook_receipts', 'payout_attempt_id'))->toBeFalse()
         ->and(Schema::hasColumn('provider_webhook_receipts', 'payout_id'))->toBeTrue();
 });

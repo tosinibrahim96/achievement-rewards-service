@@ -75,7 +75,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
     {
         if (preg_match(self::REFERENCE_PATTERN, $request->providerReference) !== 1) {
             return new CashbackTransferResult(
-                status: PayoutStatus::PermanentRejection,
+                status: PayoutStatus::Rejected,
                 errorCode: CashbackTransferErrorCode::InvalidProviderReference,
                 errorMessage: 'The stored transfer reference is invalid for Paystack.',
             );
@@ -83,7 +83,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
 
         if (! $this->client->isConfigured()) {
             return new CashbackTransferResult(
-                status: PayoutStatus::PermanentRejection,
+                status: PayoutStatus::Rejected,
                 errorCode: CashbackTransferErrorCode::ProviderUnavailable,
                 errorMessage: 'Paystack is not configured for test transfers.',
             );
@@ -106,8 +106,8 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         }
 
         /*
-         * Paystack's body says success but its HTTP status does not. Retrying might
-         * send the money twice, so treat the result as unknown.
+         * Paystack's body says success but its HTTP status does not. Posting the
+         * transfer request again might send the money twice, so the result is unknown.
          */
         if ($response->operationSucceeded() === true) {
             return $this->ambiguousResponse(
@@ -159,8 +159,8 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         };
 
         /*
-         * Without a transfer code, we cannot tell whether retrying would pay twice.
-         * Treat the result as unknown.
+         * Without a transfer code, another transfer request might pay twice, so the
+         * result is unknown.
          */
         if ($payoutStatus !== PayoutStatus::Ambiguous && $transferCode === null) {
             return $this->ambiguousResponse(
@@ -259,7 +259,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
                 HttpResponse::HTTP_FORBIDDEN,
             ], true)) {
             return new CashbackTransferResult(
-                status: PayoutStatus::PermanentRejection,
+                status: PayoutStatus::Rejected,
                 httpStatus: $response->httpStatus,
                 errorCode: CashbackTransferErrorCode::ProviderUnavailable,
                 errorMessage: 'Paystack rejected the configured test credential.',
@@ -283,7 +283,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             && ($response->httpStatus === HttpResponse::HTTP_TOO_MANY_REQUESTS
                 || $response->providerCode() === self::RATE_LIMITED_PROVIDER_CODE)) {
             return new CashbackTransferResult(
-                status: PayoutStatus::RetryableRejection,
+                status: PayoutStatus::RateLimited,
                 httpStatus: $response->httpStatus,
                 errorCode: CashbackTransferErrorCode::RateLimited,
                 errorMessage: 'Paystack rate limited the transfer request.',
@@ -302,7 +302,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         }
 
         return new CashbackTransferResult(
-            status: PayoutStatus::PermanentRejection,
+            status: PayoutStatus::Rejected,
             httpStatus: $response->httpStatus,
             errorCode: CashbackTransferErrorCode::ProviderRejected,
             errorMessage: 'Paystack rejected the request without creating a transfer.',

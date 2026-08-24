@@ -5,7 +5,6 @@ declare(strict_types=1);
 use App\Actions\Cashback\QueueCashbackPayout;
 use App\Actions\Cashback\QueueCashbackPayouts;
 use App\Enums\CashbackRewardStatus;
-use App\Enums\PaymentProvider;
 use App\Enums\PayoutStatus;
 use App\Events\BadgeUnlocked;
 use App\Events\PayoutAccountVerified;
@@ -213,11 +212,6 @@ it('queues only ready rewards without a payout when they have a verified account
     createReadyWakeUpReward($user, [
         'status' => CashbackRewardStatus::AwaitingPayoutAccount,
     ]);
-
-    createReadyWakeUpReward(
-        $user,
-        ['provider' => PaymentProvider::Fake],
-    );
 
     $paidOut = createReadyWakeUpReward($user);
     Payout::factory()->create([

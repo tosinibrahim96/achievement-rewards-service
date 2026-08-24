@@ -104,7 +104,7 @@ it('makes every clean waiting reward ready in the account save transaction', fun
     Event::assertDispatchedTimes(PayoutAccountVerified::class, 1);
 });
 
-it('changes only clean waiting rewards when an account is replaced', function (): void {
+it('changes only waiting rewards without a payout when an account is replaced', function (): void {
     Event::fake([PayoutAccountVerified::class]);
     $user = User::factory()->create();
     $account = app(RegisterPayoutAccount::class)->handle(
@@ -112,9 +112,6 @@ it('changes only clean waiting rewards when an account is replaced', function ()
         new RegisterPayoutAccountInput('0000001234', '057'),
     )->payoutAccount;
     $cleanWaiting = payoutAccountRewardForTest($user);
-    $providerBoundWaiting = payoutAccountRewardForTest($user, [
-        'provider' => PaymentProvider::Fake,
-    ]);
     $waitingWithPayout = payoutAccountRewardForTest($user);
     Payout::factory()->create([
         'cashback_reward_id' => $waitingWithPayout->id,
@@ -125,7 +122,6 @@ it('changes only clean waiting rewards when an account is replaced', function ()
         CashbackRewardStatus::Processing,
         CashbackRewardStatus::Pending,
         CashbackRewardStatus::AwaitingFunds,
-        CashbackRewardStatus::Retrying,
         CashbackRewardStatus::Paid,
         CashbackRewardStatus::RequiresAttention,
     ];
@@ -142,7 +138,6 @@ it('changes only clean waiting rewards when an account is replaced', function ()
     );
 
     expect($cleanWaiting->refresh()->status)->toBe(CashbackRewardStatus::ReadyForPayout)
-        ->and($providerBoundWaiting->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
         ->and($waitingWithPayout->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
         ->and($unchanged->map(
             static fn (CashbackReward $reward): CashbackRewardStatus => $reward->refresh()->status,

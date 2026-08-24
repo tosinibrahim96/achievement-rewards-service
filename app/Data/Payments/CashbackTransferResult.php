@@ -49,13 +49,20 @@ final readonly class CashbackTransferResult
 
         $statusesThatCannotHaveTransferCode = [
             PayoutStatus::InsufficientFunds,
-            PayoutStatus::RetryableRejection,
-            PayoutStatus::PermanentRejection,
+            PayoutStatus::RateLimited,
+            PayoutStatus::Rejected,
         ];
 
         if (in_array($status, $statusesThatCannotHaveTransferCode, true) && $transferCode !== null) {
             throw new InvalidArgumentException(
                 sprintf('Payout status "%s" cannot have a transfer code.', $status->value),
+            );
+        }
+
+        if (($status === PayoutStatus::RateLimited)
+            !== ($errorCode === CashbackTransferErrorCode::RateLimited)) {
+            throw new InvalidArgumentException(
+                'The "rate_limited" payout status requires the matching error code, and that error code cannot be used with another status.',
             );
         }
 

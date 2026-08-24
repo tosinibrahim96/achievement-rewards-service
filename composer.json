@@ -44,14 +44,15 @@
             "composer validate --strict --no-check-publish",
             "@lint",
             "@analyse",
-            "@test:coverage",
-            "composer audit --locked --no-interaction"
+            "composer audit --locked --no-interaction",
+            "@test:coverage"
         ],
         "test": [
             "@php artisan config:clear --ansi @no_additional_args",
             "@php artisan test"
         ],
         "test:coverage": [
+            "Composer\\Config::disableProcessTimeout",
             "@php artisan config:clear --ansi @no_additional_args",
             "XDEBUG_MODE=coverage php artisan test --coverage --min=90"
         ],

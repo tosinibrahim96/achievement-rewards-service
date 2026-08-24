@@ -165,9 +165,9 @@ it('does not save the reference when the fake provider creates no transfer', fun
         0,
         CashbackTransferErrorCode::InsufficientFunds,
     ],
-    'permanent rejection' => [
+    'rejected' => [
         'permanent_failure',
-        PayoutStatus::PermanentRejection,
+        PayoutStatus::Rejected,
         null,
         CashbackTransferErrorCode::PermanentFailure,
     ],

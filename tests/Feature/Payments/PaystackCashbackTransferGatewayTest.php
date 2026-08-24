@@ -192,12 +192,12 @@ it('maps rejected requests with no transfer data without persisting raw provider
     'insufficient balance US spelling' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Your balance is not enough to fulfill this request', null, PayoutStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
     'insufficient balance UK spelling' => [HttpResponse::HTTP_BAD_REQUEST, 'false', 'Your balance is not enough to fulfil this request', null, PayoutStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
     'insufficient balance normalized whitespace case and punctuation' => [HttpResponse::HTTP_BAD_REQUEST, false, "  YOUR\tBALANCE  IS NOT ENOUGH TO FULFILL THIS REQUEST!!  ", null, PayoutStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
-    'near-miss balance message remains rejected' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Your balance is not enough to fulfil this request right now', null, PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderRejected],
-    'rate limited' => [HttpResponse::HTTP_TOO_MANY_REQUESTS, false, 'Rate limit exceeded!', 'rate_limited', PayoutStatus::RetryableRejection, CashbackTransferErrorCode::RateLimited],
-    'rate-limited provider code' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Request rejected', 'rate_limited', PayoutStatus::RetryableRejection, CashbackTransferErrorCode::RateLimited],
-    'recipient validation' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Recipient 0000000000 specified is invalid', 'missing_params', PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderRejected],
-    'invalid credential' => [HttpResponse::HTTP_UNAUTHORIZED, false, 'Invalid key', null, PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderUnavailable],
-    'forbidden credential' => [HttpResponse::HTTP_FORBIDDEN, false, 'Transfers are unavailable', null, PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderUnavailable],
+    'near-miss balance message remains rejected' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Your balance is not enough to fulfil this request right now', null, PayoutStatus::Rejected, CashbackTransferErrorCode::ProviderRejected],
+    'rate limited' => [HttpResponse::HTTP_TOO_MANY_REQUESTS, false, 'Rate limit exceeded!', 'rate_limited', PayoutStatus::RateLimited, CashbackTransferErrorCode::RateLimited],
+    'rate-limited provider code' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Request rejected', 'rate_limited', PayoutStatus::RateLimited, CashbackTransferErrorCode::RateLimited],
+    'recipient validation' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Recipient 0000000000 specified is invalid', 'missing_params', PayoutStatus::Rejected, CashbackTransferErrorCode::ProviderRejected],
+    'invalid credential' => [HttpResponse::HTTP_UNAUTHORIZED, false, 'Invalid key', null, PayoutStatus::Rejected, CashbackTransferErrorCode::ProviderUnavailable],
+    'forbidden credential' => [HttpResponse::HTTP_FORBIDDEN, false, 'Transfers are unavailable', null, PayoutStatus::Rejected, CashbackTransferErrorCode::ProviderUnavailable],
     'server ambiguity' => [HttpResponse::HTTP_INTERNAL_SERVER_ERROR, false, 'System Malfunction 0000000000', null, PayoutStatus::Ambiguous, CashbackTransferErrorCode::ProviderUnavailable],
     'insufficient phrase on server error' => [HttpResponse::HTTP_INTERNAL_SERVER_ERROR, false, 'Your balance is not enough to fulfill this request', null, PayoutStatus::Ambiguous, CashbackTransferErrorCode::ProviderUnavailable],
     'duplicate reference ambiguity' => [HttpResponse::HTTP_BAD_REQUEST, false, 'A transfer with this reference already exists', null, PayoutStatus::Ambiguous, CashbackTransferErrorCode::DuplicateReference],
@@ -275,7 +275,7 @@ it('rejects an invalid stored reference before sending provider work', function 
 
     $result = app(PaystackCashbackTransferGateway::class)->initiateTransfer($invalid);
 
-    expect($result->status)->toBe(PayoutStatus::PermanentRejection)
+    expect($result->status)->toBe(PayoutStatus::Rejected)
         ->and($result->errorCode)->toBe(CashbackTransferErrorCode::InvalidProviderReference);
     Http::assertNothingSent();
 });
@@ -287,7 +287,7 @@ it('rejects missing local test configuration conclusively before provider I/O', 
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutStatus::PermanentRejection)
+    expect($result->status)->toBe(PayoutStatus::Rejected)
         ->and($result->transferCode)->toBeNull()
         ->and($result->errorCode)->toBe(CashbackTransferErrorCode::ProviderUnavailable)
         ->and($result->errorMessage)->toBe('Paystack is not configured for test transfers.');

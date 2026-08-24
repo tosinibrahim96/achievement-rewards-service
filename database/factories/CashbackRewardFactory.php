@@ -31,7 +31,6 @@ class CashbackRewardFactory extends Factory
             },
             'amount_minor' => 30_000,
             'currency' => Currency::Ngn,
-            'provider' => null,
             'provider_reference' => 'cashback-'.Str::lower((string) Str::ulid()),
             'status' => CashbackRewardStatus::AwaitingPayoutAccount,
             'correlation_id' => static function (array $attributes): string {
@@ -44,18 +43,12 @@ class CashbackRewardFactory extends Factory
                 return UserBadge::query()->findOrFail($userBadgeId)->correlation_id;
             },
             'paid_at' => null,
-            'last_attempted_at' => null,
-            'last_error_code' => null,
-            'last_error_message' => null,
-            'last_observed_balance_minor' => null,
-            'balance_observed_at' => null,
         ];
     }
 
     public function readyForPayout(): static
     {
         return $this->state(fn (): array => [
-            'provider' => null,
             'status' => CashbackRewardStatus::ReadyForPayout,
         ]);
     }

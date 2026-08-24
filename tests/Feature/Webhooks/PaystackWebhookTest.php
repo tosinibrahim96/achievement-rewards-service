@@ -75,8 +75,8 @@ function paystackWebhookPayout(PayoutStatus $status = PayoutStatus::Pending): ar
         PayoutStatus::Pending => CashbackRewardStatus::Pending,
         PayoutStatus::Succeeded => CashbackRewardStatus::Paid,
         PayoutStatus::InsufficientFunds => CashbackRewardStatus::AwaitingFunds,
-        PayoutStatus::RetryableRejection,
-        PayoutStatus::PermanentRejection,
+        PayoutStatus::RateLimited,
+        PayoutStatus::Rejected,
         PayoutStatus::OtpRequired,
         PayoutStatus::Failed,
         PayoutStatus::Reversed => CashbackRewardStatus::RequiresAttention,
@@ -86,21 +86,19 @@ function paystackWebhookPayout(PayoutStatus $status = PayoutStatus::Pending): ar
         ->for($user)
         ->for(UserBadge::factory()->for($user), 'userBadge')
         ->create([
-            'provider' => PaymentProvider::Paystack,
             'status' => $rewardStatus,
             'paid_at' => $status === PayoutStatus::Succeeded ? now()->subMinute() : null,
-            'last_attempted_at' => now()->subMinute(),
         ]);
     $account = PayoutAccount::factory()->for($user)->create([
         'provider' => PaymentProvider::Paystack,
         'provider_recipient_code' => 'RCP_WEBHOOK_CUSTOMER',
     ]);
-    $completedAt = $status === PayoutStatus::Started ? null : now()->subMinute();
+    $firstResultAt = $status === PayoutStatus::Started ? null : now()->subMinute();
     $transferCode = in_array($status, [
         PayoutStatus::Started,
         PayoutStatus::InsufficientFunds,
-        PayoutStatus::RetryableRejection,
-        PayoutStatus::PermanentRejection,
+        PayoutStatus::RateLimited,
+        PayoutStatus::Rejected,
     ], true) ? null : 'TRF_WEBHOOK_TRANSFER';
     $payout = Payout::factory()->create([
         'cashback_reward_id' => $reward->id,
@@ -109,9 +107,12 @@ function paystackWebhookPayout(PayoutStatus $status = PayoutStatus::Pending): ar
         'provider_recipient_code' => $account->provider_recipient_code,
         'status' => $status,
         'provider_transfer_code' => $transferCode,
-        'succeeded_at' => $status === PayoutStatus::Succeeded ? $completedAt : null,
-        'reversed_at' => $status === PayoutStatus::Reversed ? $completedAt : null,
-        'completed_at' => $completedAt,
+        'provider_error_code' => $status === PayoutStatus::RateLimited
+            ? CashbackTransferErrorCode::RateLimited->value
+            : null,
+        'succeeded_at' => $status === PayoutStatus::Succeeded ? $firstResultAt : null,
+        'reversed_at' => $status === PayoutStatus::Reversed ? $firstResultAt : null,
+        'first_result_at' => $firstResultAt,
     ]);
 
     return [$reward, $payout];
@@ -179,7 +180,7 @@ beforeEach(function (): void {
 
 it('authenticates exact bytes and atomically applies a matching success callback', function (): void {
     [$reward, $payout] = paystackWebhookPayout();
-    $completedAt = $payout->completed_at;
+    $firstResultAt = $payout->first_result_at;
     $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
 
     $response = postPaystackWebhook($this, $body);
@@ -198,7 +199,7 @@ it('authenticates exact bytes and atomically applies a matching success callback
         ->and($payout->status)->toBe(PayoutStatus::Succeeded)
         ->and($payout->provider_transfer_code)->toBe('TRF_WEBHOOK_TRANSFER')
         ->and($payout->succeeded_at)->not->toBeNull()
-        ->and($payout->completed_at?->equalTo($completedAt))->toBeTrue()
+        ->and($payout->first_result_at?->equalTo($firstResultAt))->toBeTrue()
         ->and($payout->provider_error_code)->toBeNull()
         ->and($reward->status)->toBe(CashbackRewardStatus::Paid)
         ->and($reward->paid_at)->not->toBeNull()
@@ -450,6 +451,35 @@ it('distinguishes unknown references from mismatched stored payout facts', funct
     ],
 ]);
 
+it('matches callbacks against the payout provider snapshot after the account changes', function (): void {
+    [$reward, $payout] = paystackWebhookPayout();
+    $payout->payoutAccount->update([
+        'provider' => PaymentProvider::Fake,
+        'provider_recipient_code' => 'RCP_REPLACED_AFTER_PAYOUT',
+    ]);
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
+
+    postPaystackWebhook($this, $body)->assertOk();
+
+    expect(ProviderWebhookReceipt::query()->sole()->result)
+        ->toBe(ProviderWebhookReceiptResult::Applied)
+        ->and($payout->fresh()?->provider)->toBe(PaymentProvider::Paystack)
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Succeeded);
+});
+
+it('rejects a Paystack callback when the payout belongs to another provider', function (): void {
+    [$reward, $payout] = paystackWebhookPayout();
+    $payout->update(['provider' => PaymentProvider::Fake]);
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
+
+    postPaystackWebhook($this, $body)->assertOk();
+
+    expect(ProviderWebhookReceipt::query()->sole()->result)
+        ->toBe(ProviderWebhookReceiptResult::Mismatch)
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Pending)
+        ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Pending);
+});
+
 it('deduplicates exact delivery but records a byte-different semantic duplicate as unchanged', function (): void {
     Log::spy();
     [$reward, $payout] = paystackWebhookPayout();
@@ -542,8 +572,7 @@ it('applies failure and reversal facts with safe local errors and one support re
         ->and($payout->provider_error_message)->not->toContain('raw provider prose')
         ->and($payout->support_alert_requested_at)->not->toBeNull()
         ->and($reward->status)->toBe(CashbackRewardStatus::RequiresAttention)
-        ->and($reward->paid_at)->toBeNull()
-        ->and($reward->last_error_code)->toBe($expectedError->value);
+        ->and($reward->paid_at)->toBeNull();
     expect(ProviderWebhookReceipt::query()->count())->toBe(1);
     Notification::assertSentOnDemandTimes(CashbackPayoutRequiresAttention::class, 1);
 })->with([
@@ -690,8 +719,8 @@ it('does not reopen failed reversed or statuses where no transfer was created', 
     PayoutStatus::Failed,
     PayoutStatus::Reversed,
     PayoutStatus::InsufficientFunds,
-    PayoutStatus::RetryableRejection,
-    PayoutStatus::PermanentRejection,
+    PayoutStatus::RateLimited,
+    PayoutStatus::Rejected,
 ]);
 
 it('lets a real callback win before the older initiation response is stored', function (): void {
@@ -734,6 +763,7 @@ it('lets a real callback win before the older initiation response is stored', fu
 
     expect($payout?->status)->toBe(PayoutStatus::Succeeded)
         ->and($payout?->provider_transfer_code)->toBe('TRF_CALLBACK_WON')
+        ->and($payout?->first_result_at)->not->toBeNull()
         ->and($reward->status)->toBe(CashbackRewardStatus::Paid)
         ->and(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Applied);
@@ -741,8 +771,8 @@ it('lets a real callback win before the older initiation response is stored', fu
         'cashback.payout.processed',
         Mockery::on(fn (array $context): bool => $context['state_changed'] === false
             && $context['payout_status'] === PayoutStatus::Succeeded->value
-            && $context['provider_http_status'] === 200
-            && $context['provider_latency_ms'] === 9),
+            && $context['provider_http_status'] === null
+            && $context['provider_latency_ms'] === null),
     )->once();
 });
 
