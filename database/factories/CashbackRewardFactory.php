@@ -51,4 +51,12 @@ class CashbackRewardFactory extends Factory
             'balance_observed_at' => null,
         ];
     }
+
+    public function readyForPayout(): static
+    {
+        return $this->state(fn (): array => [
+            'provider' => null,
+            'status' => CashbackRewardStatus::ReadyForPayout,
+        ]);
+    }
 }

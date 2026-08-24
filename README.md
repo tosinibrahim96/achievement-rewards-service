@@ -389,7 +389,7 @@ trusted POST
     -> every newly crossed active badge is persisted in rank order
     -> create one NGN 300 cashback reward in the same badge transaction
     -> dispatch one BadgeUnlocked after commit per new badge
-    -> queued wake-up listener discovers all actionable rewards for that user
+    -> queued wake-up listener asks QueueCashbackPayouts to find ready rewards for that user
     -> queue one unique job carrying only each cashback reward ID
     -> transactionally snapshot provider, destination, money, and reference in an attempt
     -> call the snapshotted fake or Paystack transfer gateway after the claim transaction commits
@@ -409,9 +409,16 @@ Both events implement after-commit dispatch. A transaction rollback therefore re
 
 ### Durable cashback entitlement and payout execution
 
-`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. New rewards start in `awaiting_payout_account`; badge and verified-account wake-ups now discover when they are actionable.
+`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that later payment attempts must reuse. Its two pre-payout states have different customer meanings:
 
-Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: their queued listeners re-query all unattempted rewards that the event user can now receive and dispatch one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks and claims the reward, copies the current verified account's provider and destination into a durable `payout_attempts` snapshot, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
+| Reward state | Local fact | Payout work |
+| --- | --- | --- |
+| `awaiting_payout_account` | The customer has no verified payout account | Blocked until the customer adds one |
+| `ready_for_payout` | A verified account exists and no payout has started | Eligible to be queued; it does not mean paid |
+
+Badge-first and account-first customers converge before a listener runs. A badge created without an account starts awaiting, and the later account transaction changes every clean waiting reward to ready. If the account exists first, the badge transaction creates the reward ready immediately. Both transactions lock the same customer row before deciding, so the stored state does not depend on queue timing.
+
+Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: `QueueCashbackPayoutsOnBadgeUnlocked` and `QueueCashbackPayoutsOnPayoutAccountVerified` ask `QueueCashbackPayouts` to re-query all ready, unbound, unattempted rewards for that user and queue one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks the reward, requires `ready_for_payout`, rechecks the verified account, copies the provider and destination into a durable `payout_attempts` snapshot, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
 
 The provider and destination become sticky on first claim. Changing `PAYMENT_DRIVER`, replacing the customer's account, or changing the fake scenario later cannot redirect an existing attempt. The reward's stable reference is reused by both providers; the fake stores accepted effects atomically in Redis, while Paystack receives the same reference for initiation and verification. Queue uniqueness and overlap locks reduce repeated work, while the PostgreSQL claim and attempt uniqueness are the durable defenses.
 
@@ -426,13 +433,15 @@ The four server-controlled fake transfer scenarios map as follows:
 
 A created fake effect deliberately has no TTL, so a later scenario change cannot erase or replace its transfer identity. The insufficient-funds outcome records its observed zero balance, but the processor does not mistake an advisory balance read for a reservation. The signed Paystack callback above may finalize a matching real-adapter attempt, and the first unresolved result requests support. There is still no automatic retry or scheduled reconciliation: `pending`, `processing`, `awaiting_funds`, and `requires_attention` remain durable operational facts.
 
-After deploying these listeners, run the bounded activation scan once so eligible rewards created before deployment are not left dormant:
+The project seeders create no cashback rewards, payout accounts, attempts, or queued cashback listeners, so this schema change has no historical reward rows or listener payloads to migrate. Restart long-lived workers after placing the new code so they load the renamed listener classes.
+
+For future ready rewards whose normal event wake-up is missed, run the bounded recovery scan manually:
 
 ```bash
-docker compose run --rm app php artisan cashback:dispatch-actionable
+docker compose run --rm app php artisan cashback:queue-payouts
 ```
 
-The command only discovers candidates and dispatches the same reward-ID jobs; it never calls a provider itself and is safe to rerun. The reported number is the number of actionable candidates requested, while queue uniqueness may suppress an already queued duplicate. Only the four documented `FAKE_TRANSFER_SCENARIO` values are accepted; an unsupported value fails before a reward is claimed. Changing the server-side scenario requires the long-lived Horizon workers to reload configuration:
+The command calls `QueueCashbackPayouts::queueForAllUsers()`. It only queues the same reward-ID jobs, never calls a provider itself, and is safe to rerun. Its output is the number of jobs newly queued in that run; an immediate duplicate run reports zero when the unique locks already exist. Only the four documented `FAKE_TRANSFER_SCENARIO` values are accepted; an unsupported value fails before a reward is claimed. Changing the server-side scenario requires the long-lived Horizon workers to reload configuration:
 
 ```bash
 docker compose restart horizon
@@ -564,7 +573,7 @@ docker compose run --rm app php artisan route:list --path=users -v
 docker compose run --rm app php artisan route:list --path=api/me/payout-account
 docker compose run --rm app php artisan route:list --path=api/me/cashback-rewards
 docker compose run --rm app php artisan route:list --path=api/webhooks/paystack
-docker compose run --rm app php artisan help cashback:dispatch-actionable
+docker compose run --rm app php artisan help cashback:queue-payouts
 docker compose run --rm app php artisan event:list
 docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Payouts tests/Feature/Payments tests/Feature/Webhooks tests/Feature/Concurrency
 docker compose run --rm app composer quality

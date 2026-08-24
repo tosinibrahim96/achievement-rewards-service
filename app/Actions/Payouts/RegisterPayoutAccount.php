@@ -8,10 +8,12 @@ use App\Data\Payments\CreatedTransferRecipient;
 use App\Data\Payouts\PayoutAccountRegistrationResult;
 use App\Data\Payouts\RegisterPayoutAccountInput;
 use App\Enums\AccountType;
+use App\Enums\CashbackRewardStatus;
 use App\Events\PayoutAccountVerified;
 use App\Exceptions\Payouts\PayoutAccountBusyException;
 use App\Exceptions\Payouts\PayoutAccountConflictException;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
+use App\Models\CashbackReward;
 use App\Models\PayoutAccount;
 use App\Models\User;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -122,6 +124,7 @@ final readonly class RegisterPayoutAccount
                     'verified_at' => now(),
                 ])->save();
 
+                $this->makeRewardsReadyForPayout($user->id);
                 PayoutAccountVerified::dispatch($payoutAccount);
 
                 return new PayoutAccountRegistrationResult($payoutAccount, $wasCreated);
@@ -133,6 +136,16 @@ final readonly class RegisterPayoutAccount
 
             throw new PayoutAccountConflictException(previous: $exception);
         }
+    }
+
+    private function makeRewardsReadyForPayout(int $userId): void
+    {
+        CashbackReward::query()
+            ->where('user_id', $userId)
+            ->where('status', CashbackRewardStatus::AwaitingPayoutAccount)
+            ->whereNull('provider')
+            ->whereDoesntHave('payoutAttempts')
+            ->update(['status' => CashbackRewardStatus::ReadyForPayout]);
     }
 
     private function isRecipientCodeConflict(UniqueConstraintViolationException $exception): bool

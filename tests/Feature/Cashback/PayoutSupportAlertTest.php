@@ -64,13 +64,14 @@ final class FixedSupportOutcomeGateway implements CashbackTransferGateway
 function rewardForPayoutSupportTest(): array
 {
     $user = User::factory()->create(['email' => 'private-customer@example.test']);
-    $reward = CashbackReward::factory()
-        ->for($user)
-        ->for(UserBadge::factory()->for($user), 'userBadge')
-        ->create();
     $account = PayoutAccount::factory()->for($user)->create([
         'provider_recipient_code' => 'RCP_PRIVATE_DESTINATION',
     ]);
+    $reward = CashbackReward::factory()
+        ->for($user)
+        ->for(UserBadge::factory()->for($user), 'userBadge')
+        ->readyForPayout()
+        ->create();
 
     return [$reward, $account];
 }

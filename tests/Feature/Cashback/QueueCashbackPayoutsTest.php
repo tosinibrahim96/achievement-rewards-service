@@ -2,8 +2,8 @@
 
 declare(strict_types=1);
 
-use App\Actions\Cashback\DispatchActionableCashbackRewards;
 use App\Actions\Cashback\EnqueueCashbackPayment;
+use App\Actions\Cashback\QueueCashbackPayouts;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\PaymentProvider;
 use App\Enums\PayoutAttemptStatus;
@@ -11,8 +11,8 @@ use App\Events\BadgeUnlocked;
 use App\Events\PayoutAccountVerified;
 use App\Infrastructure\Payments\FakeTransferEffectRegistry;
 use App\Jobs\ProcessCashbackPaymentJob;
-use App\Listeners\DispatchCashbackRewardsOnBadgeUnlocked;
-use App\Listeners\DispatchCashbackRewardsOnPayoutAccountVerified;
+use App\Listeners\QueueCashbackPayoutsOnBadgeUnlocked;
+use App\Listeners\QueueCashbackPayoutsOnPayoutAccountVerified;
 use App\Models\CashbackReward;
 use App\Models\PayoutAccount;
 use App\Models\PayoutAttempt;
@@ -36,13 +36,14 @@ use RuntimeException;
 
 uses(DatabaseMigrations::class);
 
-function createActionableWakeUpReward(User $user, array $attributes = []): CashbackReward
+function createReadyWakeUpReward(User $user, array $attributes = []): CashbackReward
 {
     $userBadge = UserBadge::factory()->for($user)->create();
 
     return CashbackReward::factory()
         ->for($user)
         ->for($userBadge, 'userBadge')
+        ->readyForPayout()
         ->create($attributes);
 }
 
@@ -62,17 +63,17 @@ it('autodiscovers both thin queued wake-up listeners', function (): void {
 
     Event::assertListening(
         BadgeUnlocked::class,
-        DispatchCashbackRewardsOnBadgeUnlocked::class,
+        QueueCashbackPayoutsOnBadgeUnlocked::class,
     );
     Event::assertListening(
         PayoutAccountVerified::class,
-        DispatchCashbackRewardsOnPayoutAccountVerified::class,
+        QueueCashbackPayoutsOnPayoutAccountVerified::class,
     );
 
-    expect(app(DispatchCashbackRewardsOnBadgeUnlocked::class))
+    expect(app(QueueCashbackPayoutsOnBadgeUnlocked::class))
         ->toBeInstanceOf(ShouldQueue::class)
         ->tries->toBe(10)
-        ->and(app(DispatchCashbackRewardsOnPayoutAccountVerified::class))
+        ->and(app(QueueCashbackPayoutsOnPayoutAccountVerified::class))
         ->toBeInstanceOf(ShouldQueue::class)
         ->tries->toBe(10);
 
@@ -80,9 +81,11 @@ it('autodiscovers both thin queued wake-up listeners', function (): void {
 
     expect(Artisan::output())
         ->toContain(BadgeUnlocked::class)
-        ->toContain(DispatchCashbackRewardsOnBadgeUnlocked::class)
+        ->toContain(QueueCashbackPayoutsOnBadgeUnlocked::class)
         ->toContain(PayoutAccountVerified::class)
-        ->toContain(DispatchCashbackRewardsOnPayoutAccountVerified::class);
+        ->toContain(QueueCashbackPayoutsOnPayoutAccountVerified::class)
+        ->not->toContain('DispatchCashbackRewardsOnBadgeUnlocked')
+        ->not->toContain('DispatchCashbackRewardsOnPayoutAccountVerified');
 });
 
 it('treats duplicate badge events as user wake-ups and repairs every missed reward', function (): void {
@@ -92,11 +95,11 @@ it('treats duplicate badge events as user wake-ups and repairs every missed rewa
     PayoutAccount::factory()->for($user)->create();
     PayoutAccount::factory()->for($otherUser)->create();
     $expectedIds = collect([
-        createActionableWakeUpReward($user)->id,
-        createActionableWakeUpReward($user)->id,
-        createActionableWakeUpReward($user)->id,
+        createReadyWakeUpReward($user)->id,
+        createReadyWakeUpReward($user)->id,
+        createReadyWakeUpReward($user)->id,
     ])->sort()->values()->all();
-    createActionableWakeUpReward($otherUser);
+    createReadyWakeUpReward($otherUser);
 
     BadgeUnlocked::dispatch('A display name that identifies no reward', $user);
     BadgeUnlocked::dispatch('A different duplicate signal', $user);
@@ -105,12 +108,12 @@ it('treats duplicate badge events as user wake-ups and repairs every missed rewa
     expect(queuedCashbackRewardIds())->toBe($expectedIds);
 });
 
-it('uses payout account verification to wake every waiting reward for its user', function (): void {
+it('uses payout account verification to wake every ready reward for its user', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);
     $user = User::factory()->create();
     $expectedIds = collect([
-        createActionableWakeUpReward($user)->id,
-        createActionableWakeUpReward($user)->id,
+        createReadyWakeUpReward($user)->id,
+        createReadyWakeUpReward($user)->id,
     ])->sort()->values()->all();
     $payoutAccount = PayoutAccount::factory()->for($user)->create();
 
@@ -120,10 +123,13 @@ it('uses payout account verification to wake every waiting reward for its user',
     expect(queuedCashbackRewardIds())->toBe($expectedIds);
 });
 
-it('wakes a reward when its verified payout account arrives after the badge', function (): void {
+it('does not use an account event to repair a contradictory awaiting reward', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);
     $user = User::factory()->create();
-    $reward = createActionableWakeUpReward($user);
+    $reward = CashbackReward::factory()
+        ->for($user)
+        ->for(UserBadge::factory()->for($user), 'userBadge')
+        ->create();
 
     BadgeUnlocked::dispatch('Beginner', $user);
 
@@ -132,10 +138,8 @@ it('wakes a reward when its verified payout account arrives after the badge', fu
     $payoutAccount = PayoutAccount::factory()->for($user)->create();
     PayoutAccountVerified::dispatch($payoutAccount);
 
-    Queue::assertPushed(
-        ProcessCashbackPaymentJob::class,
-        static fn (ProcessCashbackPaymentJob $job): bool => $job->cashbackRewardId === $reward->id,
-    );
+    Queue::assertNotPushed(ProcessCashbackPaymentJob::class);
+    expect($reward->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount);
 });
 
 it('does not dispatch payment work from a badge event before its transaction commits', function (): void {
@@ -146,7 +150,7 @@ it('does not dispatch payment work from a badge event before its transaction com
     DB::beginTransaction();
 
     try {
-        $reward = createActionableWakeUpReward($user);
+        $reward = createReadyWakeUpReward($user);
         BadgeUnlocked::dispatch('Beginner', $user);
 
         Queue::assertNotPushed(ProcessCashbackPaymentJob::class);
@@ -176,7 +180,7 @@ it('runs the assembled queued wake-up and fake payment pipeline with real redis 
     );
     $user = User::factory()->create();
     PayoutAccount::factory()->for($user)->create();
-    $reward = createActionableWakeUpReward($user);
+    $reward = createReadyWakeUpReward($user);
     $effects = app(FakeTransferEffectRegistry::class);
     $job = new ProcessCashbackPaymentJob($reward->id);
     $uniqueLock = new UniqueLock(Cache::store('redis'));
@@ -200,18 +204,22 @@ it('runs the assembled queued wake-up and fake payment pipeline with real redis 
     }
 });
 
-it('dispatches only unbound unattempted waiting rewards with a verified account', function (): void {
+it('queues only unbound unattempted ready rewards with a verified account', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);
     $user = User::factory()->create();
     $payoutAccount = PayoutAccount::factory()->for($user)->create();
-    $eligible = createActionableWakeUpReward($user);
+    $eligible = createReadyWakeUpReward($user);
 
-    createActionableWakeUpReward(
+    createReadyWakeUpReward($user, [
+        'status' => CashbackRewardStatus::AwaitingPayoutAccount,
+    ]);
+
+    createReadyWakeUpReward(
         $user,
         ['provider' => PaymentProvider::Fake],
     );
 
-    $attempted = createActionableWakeUpReward($user);
+    $attempted = createReadyWakeUpReward($user);
     PayoutAttempt::factory()->create([
         'cashback_reward_id' => $attempted->id,
         'payout_account_id' => $payoutAccount->id,
@@ -219,16 +227,16 @@ it('dispatches only unbound unattempted waiting rewards with a verified account'
 
     foreach (array_filter(
         CashbackRewardStatus::cases(),
-        static fn (CashbackRewardStatus $status): bool => $status !== CashbackRewardStatus::AwaitingPayoutAccount,
+        static fn (CashbackRewardStatus $status): bool => $status !== CashbackRewardStatus::ReadyForPayout,
     ) as $status) {
-        createActionableWakeUpReward($user, ['status' => $status]);
+        createReadyWakeUpReward($user, ['status' => $status]);
     }
 
     $userWithoutAccount = User::factory()->create();
-    createActionableWakeUpReward($userWithoutAccount);
+    createReadyWakeUpReward($userWithoutAccount);
 
-    $count = app(DispatchActionableCashbackRewards::class)
-        ->dispatchForAllUsers(chunkSize: 2);
+    $count = app(QueueCashbackPayouts::class)
+        ->queueForAllUsers(chunkSize: 2);
 
     expect($count)->toBe(1)
         ->and(queuedCashbackRewardIds())->toBe([$eligible->id]);
@@ -241,16 +249,16 @@ it('scans all users in deterministic bounded id chunks and keeps the job payload
     PayoutAccount::factory()->for($firstUser)->create();
     PayoutAccount::factory()->for($secondUser)->create();
     $expectedIds = [
-        createActionableWakeUpReward($secondUser)->id,
-        createActionableWakeUpReward($firstUser)->id,
-        createActionableWakeUpReward($secondUser)->id,
-        createActionableWakeUpReward($firstUser)->id,
-        createActionableWakeUpReward($secondUser)->id,
+        createReadyWakeUpReward($secondUser)->id,
+        createReadyWakeUpReward($firstUser)->id,
+        createReadyWakeUpReward($secondUser)->id,
+        createReadyWakeUpReward($firstUser)->id,
+        createReadyWakeUpReward($secondUser)->id,
     ];
     sort($expectedIds);
 
-    $count = app(DispatchActionableCashbackRewards::class)
-        ->dispatchForAllUsers(chunkSize: 2);
+    $count = app(QueueCashbackPayouts::class)
+        ->queueForAllUsers(chunkSize: 2);
 
     expect($count)->toBe(5)
         ->and(queuedCashbackRewardIds())->toBe($expectedIds);
@@ -258,6 +266,33 @@ it('scans all users in deterministic bounded id chunks and keeps the job payload
     expect(Queue::pushed(ProcessCashbackPaymentJob::class)->every(
         static fn (ProcessCashbackPaymentJob $job): bool => collect(get_object_vars($job))
             ->doesntContain(static fn (mixed $value): bool => $value instanceof Model),
+    ))->toBeTrue();
+
+    $frameworkAndExecutionFields = [
+        'connection',
+        'queue',
+        'messageGroup',
+        'deduplicator',
+        'debounceOwner',
+        'uniqueLockOwner',
+        'delay',
+        'afterCommit',
+        'middleware',
+        'chained',
+        'chainConnection',
+        'chainQueue',
+        'chainCatchCallbacks',
+        'job',
+        'timeout',
+        'uniqueFor',
+    ];
+
+    expect(Queue::pushed(ProcessCashbackPaymentJob::class)->every(
+        static fn (ProcessCashbackPaymentJob $job): bool => array_values(array_diff(
+            array_keys(get_object_vars($job)),
+            $frameworkAndExecutionFields,
+        )) === ['cashbackRewardId']
+            && is_int($job->cashbackRewardId),
     ))->toBeTrue();
 });
 
@@ -300,27 +335,33 @@ it('releases the unique lock and rethrows when the queue push fails', function (
     (new UniqueLock($cache))->release(new ProcessCashbackPaymentJob($cashbackRewardId));
 });
 
-it('rejects an invalid unbounded chunk size', function (): void {
-    expect(fn () => app(DispatchActionableCashbackRewards::class)
-        ->dispatchForAllUsers(chunkSize: 0))
+it('rejects an invalid unbounded chunk size', function (int $chunkSize): void {
+    expect(fn () => app(QueueCashbackPayouts::class)
+        ->queueForAllUsers(chunkSize: $chunkSize))
         ->toThrow(InvalidArgumentException::class);
-});
+})->with([0, -1]);
 
-it('reports the bounded activation count and remains safe to rerun', function (): void {
+it('reports only newly queued jobs and remains safe to rerun', function (): void {
     Queue::fake([ProcessCashbackPaymentJob::class]);
     $user = User::factory()->create();
     PayoutAccount::factory()->for($user)->create();
     $expectedIds = [
-        createActionableWakeUpReward($user)->id,
-        createActionableWakeUpReward($user)->id,
+        createReadyWakeUpReward($user)->id,
+        createReadyWakeUpReward($user)->id,
     ];
 
-    expect(Artisan::call('cashback:dispatch-actionable'))->toBe(0)
-        ->and(Artisan::output())->toContain('Requested processing for 2 actionable cashback reward(s).');
+    expect(Artisan::call('cashback:queue-payouts'))->toBe(0)
+        ->and(Artisan::output())->toContain('Queued 2 cashback payout job(s).');
 
-    expect(Artisan::call('cashback:dispatch-actionable'))->toBe(0)
-        ->and(Artisan::output())->toContain('Requested processing for 2 actionable cashback reward(s).');
+    expect(Artisan::call('cashback:queue-payouts'))->toBe(0)
+        ->and(Artisan::output())->toContain('Queued 0 cashback payout job(s).');
 
     Queue::assertPushed(ProcessCashbackPaymentJob::class, 2);
     expect(queuedCashbackRewardIds())->toBe($expectedIds);
+
+    Artisan::call('list', ['--raw' => true]);
+
+    expect(Artisan::output())
+        ->toContain('cashback:queue-payouts')
+        ->not->toContain('cashback:dispatch-actionable');
 });

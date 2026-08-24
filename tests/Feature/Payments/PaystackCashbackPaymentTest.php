@@ -23,17 +23,18 @@ uses(DatabaseMigrations::class);
 function payablePaystackRewardForTest(): array
 {
     $user = User::factory()->create();
-    $userBadge = UserBadge::factory()->for($user)->create();
-    $reward = CashbackReward::factory()
-        ->for($user)
-        ->for($userBadge, 'userBadge')
-        ->create();
     $account = PayoutAccount::factory()->for($user)->create([
         'provider' => PaymentProvider::Paystack,
         'provider_recipient_code' => 'RCP_paystack_processor',
         'bank_name' => 'Zenith Bank',
         'account_name' => 'TEST CUSTOMER',
     ]);
+    $userBadge = UserBadge::factory()->for($user)->create();
+    $reward = CashbackReward::factory()
+        ->for($user)
+        ->for($userBadge, 'userBadge')
+        ->readyForPayout()
+        ->create();
 
     return [$reward, $account];
 }

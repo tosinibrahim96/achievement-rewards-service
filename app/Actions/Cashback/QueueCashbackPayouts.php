@@ -10,7 +10,7 @@ use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use InvalidArgumentException;
 
-final readonly class DispatchActionableCashbackRewards
+final readonly class QueueCashbackPayouts
 {
     public const DEFAULT_CHUNK_SIZE = 100;
 
@@ -18,28 +18,28 @@ final readonly class DispatchActionableCashbackRewards
         private EnqueueCashbackPayment $enqueueCashbackPayment,
     ) {}
 
-    public function dispatchForUser(
+    public function queueForUser(
         int $userId,
         int $chunkSize = self::DEFAULT_CHUNK_SIZE,
     ): int {
-        return $this->dispatch($userId, $chunkSize);
+        return $this->queue($userId, $chunkSize);
     }
 
-    public function dispatchForAllUsers(int $chunkSize = self::DEFAULT_CHUNK_SIZE): int
+    public function queueForAllUsers(int $chunkSize = self::DEFAULT_CHUNK_SIZE): int
     {
-        return $this->dispatch(null, $chunkSize);
+        return $this->queue(null, $chunkSize);
     }
 
-    private function dispatch(?int $userId, int $chunkSize): int
+    private function queue(?int $userId, int $chunkSize): int
     {
         if ($chunkSize < 1) {
             throw new InvalidArgumentException('The cashback reward chunk size must be positive.');
         }
 
-        $candidates = 0;
+        $queued = 0;
         $query = CashbackReward::query()
             ->select('cashback_rewards.id')
-            ->where('cashback_rewards.status', CashbackRewardStatus::AwaitingPayoutAccount)
+            ->where('cashback_rewards.status', CashbackRewardStatus::ReadyForPayout)
             ->whereNull('cashback_rewards.provider')
             ->whereDoesntHave('payoutAttempts')
             ->whereHas(
@@ -55,16 +55,17 @@ final readonly class DispatchActionableCashbackRewards
 
         $query->chunkById(
             $chunkSize,
-            static function (Collection $rewards) use (&$candidates, $enqueueCashbackPayment): void {
+            static function (Collection $rewards) use (&$queued, $enqueueCashbackPayment): void {
                 foreach ($rewards as $reward) {
-                    $enqueueCashbackPayment->handle($reward->id);
-                    $candidates++;
+                    if ($enqueueCashbackPayment->handle($reward->id)) {
+                        $queued++;
+                    }
                 }
             },
             'cashback_rewards.id',
             'id',
         );
 
-        return $candidates;
+        return $queued;
     }
 }
