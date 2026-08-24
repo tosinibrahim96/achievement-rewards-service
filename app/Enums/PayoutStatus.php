@@ -5,9 +5,9 @@ declare(strict_types=1);
 namespace App\Enums;
 
 /**
- * The state of one attempt to pay a cashback reward.
+ * The state of one cashback payout.
  */
-enum PayoutAttemptStatus: string
+enum PayoutStatus: string
 {
     case Started = 'started';
     case Ambiguous = 'ambiguous';

@@ -2,21 +2,21 @@
 
 declare(strict_types=1);
 
-use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payouts\RegisterPayoutAccountInput;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Events\PayoutAccountVerified;
 use App\Infrastructure\Payments\FakeCashbackTransferGateway;
 use App\Infrastructure\Payments\FakeTransferEffectRegistry;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
-use App\Models\PayoutAttempt;
 use App\Models\User;
 use App\Models\UserBadge;
 use Illuminate\Foundation\Testing\DatabaseMigrations;
@@ -28,7 +28,7 @@ use Tests\Support\ConcurrentRunner;
 uses(DatabaseMigrations::class);
 
 beforeEach(function (): void {
-    config()->set('app.key', 'base64:cashback-payment-concurrency-key');
+    config()->set('app.key', 'base64:cashback-payout-concurrency-key');
     config()->set('cache.default', 'redis');
     config()->set('payments.default', PaymentProvider::Fake->value);
     config()->set('payments.fake.payout_account_scenario', 'success');
@@ -53,17 +53,17 @@ it('creates one durable claim and one process-visible fake effect when workers c
 
     try {
         (new ConcurrentRunner)->run([
-            static fn () => app(ProcessCashbackPayment::class)->handle($reward->id),
-            static fn () => app(ProcessCashbackPayment::class)->handle($reward->id),
+            static fn () => app(ProcessCashbackPayout::class)->handle($reward->id),
+            static fn () => app(ProcessCashbackPayout::class)->handle($reward->id),
         ]);
 
         $reward = CashbackReward::query()->findOrFail($reward->id);
-        $attempt = PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->sole();
+        $payout = Payout::query()->where('cashback_reward_id', $reward->id)->sole();
         $effectKey = $effects->keyForReference($reward->provider_reference);
 
         expect($reward->status)->toBe(CashbackRewardStatus::Paid)
-            ->and($attempt->status)->toBe(PayoutAttemptStatus::Succeeded)
-            ->and(PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->count())->toBe(1)
+            ->and($payout->status)->toBe(PayoutStatus::Succeeded)
+            ->and(Payout::query()->where('cashback_reward_id', $reward->id)->count())->toBe(1)
             ->and((int) Redis::connection('default')->command('exists', [$effectKey]))->toBe(1)
             ->and((int) Redis::connection('default')->command('ttl', [$effectKey]))->toBe(-1);
     } finally {
@@ -107,8 +107,8 @@ it('atomically creates one authoritative fake effect when gateways compete direc
         $effectKey = $effects->keyForReference($request->providerReference);
 
         expect($effect?->status)->toBeIn([
-            PayoutAttemptStatus::Succeeded,
-            PayoutAttemptStatus::Pending,
+            PayoutStatus::Succeeded,
+            PayoutStatus::Pending,
         ])
             ->and($effect?->transferCode)
             ->toBe('TRF_FAKE_'.hash('sha256', $request->providerReference))
@@ -138,24 +138,24 @@ it('snapshots either complete destination when account replacement races the fir
 
     try {
         (new ConcurrentRunner)->run([
-            static fn () => app(ProcessCashbackPayment::class)->handle($reward->id),
+            static fn () => app(ProcessCashbackPayout::class)->handle($reward->id),
             static fn () => app(RegisterPayoutAccount::class)->handle(
                 User::query()->findOrFail($user->id),
                 $replacementInput,
             ),
         ]);
 
-        $attempt = PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->sole();
+        $payout = Payout::query()->where('cashback_reward_id', $reward->id)->sole();
         $currentAccount = PayoutAccount::query()->where('user_id', $user->id)->sole();
 
-        expect($attempt->provider)->toBe(PaymentProvider::Fake)
-            ->and($attempt->payout_account_id)->toBe($account->id)
-            ->and($attempt->provider_recipient_code)->toBeIn([
+        expect($payout->provider)->toBe(PaymentProvider::Fake)
+            ->and($payout->payout_account_id)->toBe($account->id)
+            ->and($payout->provider_recipient_code)->toBeIn([
                 $oldRecipientCode,
                 $newRecipientCode,
             ])
             ->and($currentAccount->provider_recipient_code)->toBe($newRecipientCode)
-            ->and(PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->count())->toBe(1);
+            ->and(Payout::query()->where('cashback_reward_id', $reward->id)->count())->toBe(1);
     } finally {
         $effects->forget($reward->provider_reference);
     }

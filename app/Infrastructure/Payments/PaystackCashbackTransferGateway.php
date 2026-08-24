@@ -7,13 +7,12 @@ namespace App\Infrastructure\Payments;
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
 use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentProviderFailure;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Exceptions\Payments\PaymentProviderException;
 use SensitiveParameter;
 use Symfony\Component\HttpFoundation\Response as HttpResponse;
@@ -76,7 +75,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
     {
         if (preg_match(self::REFERENCE_PATTERN, $request->providerReference) !== 1) {
             return new CashbackTransferResult(
-                status: PayoutAttemptStatus::PermanentRejection,
+                status: PayoutStatus::PermanentRejection,
                 errorCode: CashbackTransferErrorCode::InvalidProviderReference,
                 errorMessage: 'The stored transfer reference is invalid for Paystack.',
             );
@@ -84,7 +83,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
 
         if (! $this->client->isConfigured()) {
             return new CashbackTransferResult(
-                status: PayoutAttemptStatus::PermanentRejection,
+                status: PayoutStatus::PermanentRejection,
                 errorCode: CashbackTransferErrorCode::ProviderUnavailable,
                 errorMessage: 'Paystack is not configured for test transfers.',
             );
@@ -121,49 +120,9 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         return $this->mapRejectedTransfer($response);
     }
 
-    public function verifyTransfer(string $providerReference): CashbackTransferVerification
-    {
-        if (preg_match(self::REFERENCE_PATTERN, $providerReference) !== 1) {
-            throw PaymentProviderException::malformedResponse();
-        }
-
-        $response = $this->client->get('transfer/verify/'.rawurlencode($providerReference));
-
-        if ($response->operationSucceeded() === false && $this->isTransferNotFound($response)) {
-            /*
-             * A 404 means "not found" only when Paystack also says failure and
-             * returns no transfer data. Conflicting data makes the result unknown.
-             */
-            if ($response->data() !== null) {
-                return new CashbackTransferVerification(
-                    $this->ambiguousResponse(
-                        $response,
-                        $this->transferCodeFrom($response),
-                        CashbackTransferErrorCode::ProviderInvalidResponse,
-                    ),
-                );
-            }
-
-            return new CashbackTransferVerification(null);
-        }
-
-        if ($response->hasSuccessfulHttpStatus() && $response->operationSucceeded() === null) {
-            throw PaymentProviderException::malformedResponse();
-        }
-
-        if (! $response->hasSuccessfulHttpStatus() || $response->operationSucceeded() !== true) {
-            throw PaymentProviderException::unavailable();
-        }
-
-        return new CashbackTransferVerification(
-            $this->mapCreatedTransfer($response, null, $providerReference),
-        );
-    }
-
     private function mapCreatedTransfer(
         #[SensitiveParameter] PaystackResponse $response,
-        ?CashbackTransferRequest $request,
-        ?string $providerReference = null,
+        CashbackTransferRequest $request,
     ): CashbackTransferResult {
         $data = $response->data();
 
@@ -177,15 +136,11 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
 
         /** @var array<string, mixed> $data */
         $reference = $this->nonEmptyString($data['reference'] ?? null);
-        $expectedReference = $request instanceof CashbackTransferRequest
-            ? $request->providerReference
-            : $providerReference;
         $transferCode = $this->nonEmptyString($data['transfer_code'] ?? null);
         $providerTransferStatus = $this->nonEmptyString($data['status'] ?? null);
 
-        if ($expectedReference === null
-            || $reference === null
-            || ! hash_equals($expectedReference, $reference)
+        if ($reference === null
+            || ! hash_equals($request->providerReference, $reference)
             || ! $this->hasValidTransferFacts($data, $request)) {
             return $this->ambiguousResponse(
                 $response,
@@ -194,20 +149,20 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        $attemptStatus = match ($providerTransferStatus) {
-            'success' => PayoutAttemptStatus::Succeeded,
-            'pending', 'received' => PayoutAttemptStatus::Pending,
-            'otp' => PayoutAttemptStatus::OtpRequired,
-            'failed', 'abandoned', 'blocked', 'rejected' => PayoutAttemptStatus::Failed,
-            'reversed' => PayoutAttemptStatus::Reversed,
-            default => PayoutAttemptStatus::Ambiguous,
+        $payoutStatus = match ($providerTransferStatus) {
+            'success' => PayoutStatus::Succeeded,
+            'pending', 'received' => PayoutStatus::Pending,
+            'otp' => PayoutStatus::OtpRequired,
+            'failed', 'abandoned', 'blocked', 'rejected' => PayoutStatus::Failed,
+            'reversed' => PayoutStatus::Reversed,
+            default => PayoutStatus::Ambiguous,
         };
 
         /*
          * Without a transfer code, we cannot tell whether retrying would pay twice.
          * Treat the result as unknown.
          */
-        if ($attemptStatus !== PayoutAttemptStatus::Ambiguous && $transferCode === null) {
+        if ($payoutStatus !== PayoutStatus::Ambiguous && $transferCode === null) {
             return $this->ambiguousResponse(
                 $response,
                 null,
@@ -215,7 +170,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        if ($attemptStatus === PayoutAttemptStatus::Ambiguous) {
+        if ($payoutStatus === PayoutStatus::Ambiguous) {
             return $this->ambiguousResponse(
                 $response,
                 $transferCode,
@@ -223,21 +178,21 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             );
         }
 
-        $errorCode = match ($attemptStatus) {
-            PayoutAttemptStatus::OtpRequired => CashbackTransferErrorCode::OtpRequired,
-            PayoutAttemptStatus::Failed => CashbackTransferErrorCode::TransferFailed,
-            PayoutAttemptStatus::Reversed => CashbackTransferErrorCode::TransferReversed,
+        $errorCode = match ($payoutStatus) {
+            PayoutStatus::OtpRequired => CashbackTransferErrorCode::OtpRequired,
+            PayoutStatus::Failed => CashbackTransferErrorCode::TransferFailed,
+            PayoutStatus::Reversed => CashbackTransferErrorCode::TransferReversed,
             default => null,
         };
-        $errorMessage = match ($attemptStatus) {
-            PayoutAttemptStatus::OtpRequired => 'Paystack requires transfer confirmation.',
-            PayoutAttemptStatus::Failed => 'Paystack reported that the transfer failed.',
-            PayoutAttemptStatus::Reversed => 'Paystack reported that the transfer was reversed.',
+        $errorMessage = match ($payoutStatus) {
+            PayoutStatus::OtpRequired => 'Paystack requires transfer confirmation.',
+            PayoutStatus::Failed => 'Paystack reported that the transfer failed.',
+            PayoutStatus::Reversed => 'Paystack reported that the transfer was reversed.',
             default => null,
         };
 
         return new CashbackTransferResult(
-            status: $attemptStatus,
+            status: $payoutStatus,
             transferCode: $transferCode,
             httpStatus: $response->httpStatus,
             errorCode: $errorCode,
@@ -249,7 +204,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
     /** @param array<string, mixed> $data */
     private function hasValidTransferFacts(
         #[SensitiveParameter] array $data,
-        ?CashbackTransferRequest $request,
+        CashbackTransferRequest $request,
     ): bool {
         $amount = $data['amount'] ?? null;
         $currency = $data['currency'] ?? null;
@@ -262,7 +217,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             return false;
         }
 
-        return $request === null || $amount === $request->amountMinor;
+        return $amount === $request->amountMinor;
     }
 
     private function mapRejectedTransfer(
@@ -304,7 +259,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
                 HttpResponse::HTTP_FORBIDDEN,
             ], true)) {
             return new CashbackTransferResult(
-                status: PayoutAttemptStatus::PermanentRejection,
+                status: PayoutStatus::PermanentRejection,
                 httpStatus: $response->httpStatus,
                 errorCode: CashbackTransferErrorCode::ProviderUnavailable,
                 errorMessage: 'Paystack rejected the configured test credential.',
@@ -316,7 +271,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             && $response->operationSucceeded() === false
             && $this->isInsufficientBalanceMessage($normalizedMessage)) {
             return new CashbackTransferResult(
-                status: PayoutAttemptStatus::InsufficientFunds,
+                status: PayoutStatus::InsufficientFunds,
                 httpStatus: $response->httpStatus,
                 errorCode: CashbackTransferErrorCode::InsufficientFunds,
                 errorMessage: 'The Paystack balance is insufficient.',
@@ -328,7 +283,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
             && ($response->httpStatus === HttpResponse::HTTP_TOO_MANY_REQUESTS
                 || $response->providerCode() === self::RATE_LIMITED_PROVIDER_CODE)) {
             return new CashbackTransferResult(
-                status: PayoutAttemptStatus::RetryableRejection,
+                status: PayoutStatus::RetryableRejection,
                 httpStatus: $response->httpStatus,
                 errorCode: CashbackTransferErrorCode::RateLimited,
                 errorMessage: 'Paystack rate limited the transfer request.',
@@ -347,10 +302,10 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         }
 
         return new CashbackTransferResult(
-            status: PayoutAttemptStatus::PermanentRejection,
+            status: PayoutStatus::PermanentRejection,
             httpStatus: $response->httpStatus,
             errorCode: CashbackTransferErrorCode::ProviderRejected,
-            errorMessage: 'Paystack rejected the transfer before creation.',
+            errorMessage: 'Paystack rejected the request without creating a transfer.',
             latencyMs: $response->latencyMs,
         );
     }
@@ -377,7 +332,7 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         };
 
         return new CashbackTransferResult(
-            status: PayoutAttemptStatus::Ambiguous,
+            status: PayoutStatus::Ambiguous,
             errorCode: $code,
             errorMessage: $message,
         );
@@ -389,24 +344,13 @@ final readonly class PaystackCashbackTransferGateway implements CashbackTransfer
         CashbackTransferErrorCode $errorCode,
     ): CashbackTransferResult {
         return new CashbackTransferResult(
-            status: PayoutAttemptStatus::Ambiguous,
+            status: PayoutStatus::Ambiguous,
             transferCode: $transferCode,
             httpStatus: $response->httpStatus,
             errorCode: $errorCode,
             errorMessage: 'Paystack did not return a conclusive transfer result.',
             latencyMs: $response->latencyMs,
         );
-    }
-
-    private function isTransferNotFound(
-        #[SensitiveParameter] PaystackResponse $response,
-    ): bool {
-        $message = $response->message();
-        $code = $response->providerCode();
-
-        return $response->httpStatus === HttpResponse::HTTP_NOT_FOUND
-            && ($code === 'transfer_not_found'
-                || ($message !== null && strtolower(rtrim($message, '.')) === 'transfer not found'));
     }
 
     private function transferCodeFrom(

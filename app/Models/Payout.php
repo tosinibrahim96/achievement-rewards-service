@@ -6,9 +6,9 @@ namespace App\Models;
 
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use Carbon\CarbonImmutable;
-use Database\Factories\PayoutAttemptFactory;
+use Database\Factories\PayoutFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -17,14 +17,13 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 /**
  * @property int $id
  * @property int $cashback_reward_id
- * @property int $attempt_number
  * @property int $payout_account_id
  * @property PaymentProvider $provider
  * @property string $provider_reference
  * @property string $provider_recipient_code
  * @property int $amount_minor
  * @property Currency $currency
- * @property PayoutAttemptStatus $status
+ * @property PayoutStatus $status
  * @property string|null $provider_transfer_code
  * @property int|null $provider_http_status
  * @property string|null $provider_error_code
@@ -41,7 +40,6 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 #[Fillable([
     'cashback_reward_id',
-    'attempt_number',
     'payout_account_id',
     'provider',
     'provider_reference',
@@ -61,9 +59,9 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
     'started_at',
     'completed_at',
 ])]
-class PayoutAttempt extends Model
+class Payout extends Model
 {
-    /** @use HasFactory<PayoutAttemptFactory> */
+    /** @use HasFactory<PayoutFactory> */
     use HasFactory;
 
     /** @return BelongsTo<CashbackReward, $this> */
@@ -82,11 +80,10 @@ class PayoutAttempt extends Model
     protected function casts(): array
     {
         return [
-            'attempt_number' => 'integer',
             'provider' => PaymentProvider::class,
             'amount_minor' => 'integer',
             'currency' => Currency::class,
-            'status' => PayoutAttemptStatus::class,
+            'status' => PayoutStatus::class,
             'provider_http_status' => 'integer',
             'provider_latency_ms' => 'integer',
             'observed_balance_minor' => 'integer',

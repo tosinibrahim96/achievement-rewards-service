@@ -5,13 +5,13 @@ declare(strict_types=1);
 namespace App\Data\Payments;
 
 use App\Enums\CashbackTransferErrorCode;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use InvalidArgumentException;
 
 final readonly class CashbackTransferResult
 {
     public function __construct(
-        public PayoutAttemptStatus $status,
+        public PayoutStatus $status,
         public ?string $transferCode = null,
         public ?int $httpStatus = null,
         public ?CashbackTransferErrorCode $errorCode = null,
@@ -19,34 +19,44 @@ final readonly class CashbackTransferResult
         public ?int $latencyMs = null,
         public ?int $observedBalanceMinor = null,
     ) {
-        if ($transferCode === '' || $errorMessage === '') {
-            throw new InvalidArgumentException('Nullable transfer result text must be non-empty when present.');
+        if ($transferCode === '') {
+            throw new InvalidArgumentException('Transfer code cannot be empty.');
         }
 
-        if ($status === PayoutAttemptStatus::Started) {
-            throw new InvalidArgumentException('A transfer result must describe an observation after initiation.');
+        if ($errorMessage === '') {
+            throw new InvalidArgumentException('Transfer error message cannot be empty.');
         }
 
-        $providerCreatedStatuses = [
-            PayoutAttemptStatus::Pending,
-            PayoutAttemptStatus::Succeeded,
-            PayoutAttemptStatus::OtpRequired,
-            PayoutAttemptStatus::Failed,
-            PayoutAttemptStatus::Reversed,
+        if ($status === PayoutStatus::Started) {
+            throw new InvalidArgumentException(
+                'The "started" payout status is saved before calling the payment provider, so it cannot be used in a transfer result.',
+            );
+        }
+
+        $statusesThatRequireTransferCode = [
+            PayoutStatus::Pending,
+            PayoutStatus::Succeeded,
+            PayoutStatus::OtpRequired,
+            PayoutStatus::Failed,
+            PayoutStatus::Reversed,
         ];
 
-        if (in_array($status, $providerCreatedStatuses, true) && $transferCode === null) {
-            throw new InvalidArgumentException('A provider-created transfer result requires a transfer code.');
+        if (in_array($status, $statusesThatRequireTransferCode, true) && $transferCode === null) {
+            throw new InvalidArgumentException(
+                sprintf('Payout status "%s" requires a transfer code.', $status->value),
+            );
         }
 
-        $preCreationStatuses = [
-            PayoutAttemptStatus::InsufficientFunds,
-            PayoutAttemptStatus::RetryableRejection,
-            PayoutAttemptStatus::PermanentRejection,
+        $statusesThatCannotHaveTransferCode = [
+            PayoutStatus::InsufficientFunds,
+            PayoutStatus::RetryableRejection,
+            PayoutStatus::PermanentRejection,
         ];
 
-        if (in_array($status, $preCreationStatuses, true) && $transferCode !== null) {
-            throw new InvalidArgumentException('A pre-creation transfer result cannot carry a transfer code.');
+        if (in_array($status, $statusesThatCannotHaveTransferCode, true) && $transferCode !== null) {
+            throw new InvalidArgumentException(
+                sprintf('Payout status "%s" cannot have a transfer code.', $status->value),
+            );
         }
 
         if ($httpStatus !== null && ($httpStatus < 100 || $httpStatus > 599)) {

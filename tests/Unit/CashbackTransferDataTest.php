@@ -4,11 +4,10 @@ declare(strict_types=1);
 
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
 use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\Response as HttpResponse;
 
@@ -21,7 +20,7 @@ it('carries provider-neutral transfer facts with typed values', function (): voi
         currency: Currency::Ngn,
     );
     $result = new CashbackTransferResult(
-        status: PayoutAttemptStatus::Pending,
+        status: PayoutStatus::Pending,
         transferCode: 'TRF_example',
         httpStatus: HttpResponse::HTTP_OK,
         errorCode: null,
@@ -29,7 +28,6 @@ it('carries provider-neutral transfer facts with typed values', function (): voi
         latencyMs: 14,
         observedBalanceMinor: 750_000,
     );
-    $verification = new CashbackTransferVerification($result);
 
     expect($balance->amountMinor)->toBe(750_000)
         ->and($balance->currency)->toBe(Currency::Ngn)
@@ -37,8 +35,13 @@ it('carries provider-neutral transfer facts with typed values', function (): voi
         ->and($request->recipientCode)->toBe('RCP_FAKE_example')
         ->and($request->amountMinor)->toBe(30_000)
         ->and($request->currency)->toBe(Currency::Ngn)
-        ->and($verification->result)->toBe($result)
-        ->and((new CashbackTransferVerification(null))->result)->toBeNull();
+        ->and($result->status)->toBe(PayoutStatus::Pending)
+        ->and($result->transferCode)->toBe('TRF_example')
+        ->and($result->httpStatus)->toBe(HttpResponse::HTTP_OK)
+        ->and($result->errorCode)->toBeNull()
+        ->and($result->errorMessage)->toBeNull()
+        ->and($result->latencyMs)->toBe(14)
+        ->and($result->observedBalanceMinor)->toBe(750_000);
 });
 
 it('rejects negative available balances', function (): void {
@@ -63,9 +66,9 @@ it('rejects incomplete or non-positive transfer requests', function (array $over
     'negative amount' => [['amountMinor' => -1]],
 ]);
 
-it('rejects malformed optional transfer observations', function (array $override): void {
+it('rejects malformed optional transfer details', function (array $override, string $message): void {
     $valid = [
-        'status' => PayoutAttemptStatus::InsufficientFunds,
+        'status' => PayoutStatus::InsufficientFunds,
         'transferCode' => null,
         'httpStatus' => HttpResponse::HTTP_UNPROCESSABLE_ENTITY,
         'errorCode' => CashbackTransferErrorCode::InsufficientFunds,
@@ -75,19 +78,19 @@ it('rejects malformed optional transfer observations', function (array $override
     ];
 
     expect(fn () => new CashbackTransferResult(...[...$valid, ...$override]))
-        ->toThrow(InvalidArgumentException::class);
+        ->toThrow(InvalidArgumentException::class, $message);
 })->with([
-    'empty transfer code' => [['transferCode' => '']],
-    'empty error message' => [['errorMessage' => '']],
-    'HTTP status below range' => [['httpStatus' => 99]],
-    'HTTP status above range' => [['httpStatus' => 600]],
-    'negative latency' => [['latencyMs' => -1]],
-    'negative observed balance' => [['observedBalanceMinor' => -1]],
+    'empty transfer code' => [['transferCode' => ''], 'Transfer code cannot be empty.'],
+    'empty error message' => [['errorMessage' => ''], 'Transfer error message cannot be empty.'],
+    'HTTP status below range' => [['httpStatus' => 99], 'A provider HTTP status must be between 100 and 599.'],
+    'HTTP status above range' => [['httpStatus' => 600], 'A provider HTTP status must be between 100 and 599.'],
+    'negative latency' => [['latencyMs' => -1], 'Provider latency cannot be negative.'],
+    'negative observed balance' => [['observedBalanceMinor' => -1], 'An observed provider balance cannot be negative.'],
 ]);
 
 it('accepts the inclusive HTTP protocol status bounds in transfer results', function (int $httpStatus): void {
     $result = new CashbackTransferResult(
-        status: PayoutAttemptStatus::Ambiguous,
+        status: PayoutStatus::Ambiguous,
         httpStatus: $httpStatus,
     );
 
@@ -97,30 +100,38 @@ it('accepts the inclusive HTTP protocol status bounds in transfer results', func
     'upper bound' => 599,
 ]);
 
-it('rejects transfer results whose factual status contradicts provider effect identity', function (
-    PayoutAttemptStatus $status,
+it('rejects the started payout status because it is saved before the provider call', function (): void {
+    expect(fn () => new CashbackTransferResult(status: PayoutStatus::Started))
+        ->toThrow(
+            InvalidArgumentException::class,
+            'The "started" payout status is saved before calling the payment provider, so it cannot be used in a transfer result.',
+        );
+});
+
+it('rejects payout statuses with a missing or unexpected transfer code', function (
+    PayoutStatus $status,
     ?string $transferCode,
+    string $message,
 ): void {
     expect(fn () => new CashbackTransferResult(
         status: $status,
         transferCode: $transferCode,
-    ))->toThrow(InvalidArgumentException::class);
+    ))->toThrow(InvalidArgumentException::class, $message);
 })->with([
-    'started is intent rather than a result' => [PayoutAttemptStatus::Started, null],
-    'pending requires a provider transfer identity' => [PayoutAttemptStatus::Pending, null],
-    'success requires a provider transfer identity' => [PayoutAttemptStatus::Succeeded, null],
-    'OTP requires a provider transfer identity' => [PayoutAttemptStatus::OtpRequired, null],
-    'provider-created failure requires a transfer identity' => [PayoutAttemptStatus::Failed, null],
-    'reversal requires a provider transfer identity' => [PayoutAttemptStatus::Reversed, null],
-    'insufficient funds is pre-creation' => [PayoutAttemptStatus::InsufficientFunds, 'TRF_impossible'],
-    'retryable rejection is pre-creation' => [PayoutAttemptStatus::RetryableRejection, 'TRF_impossible'],
-    'permanent rejection is pre-creation' => [PayoutAttemptStatus::PermanentRejection, 'TRF_impossible'],
+    'pending without transfer code' => [PayoutStatus::Pending, null, 'Payout status "pending" requires a transfer code.'],
+    'succeeded without transfer code' => [PayoutStatus::Succeeded, null, 'Payout status "succeeded" requires a transfer code.'],
+    'OTP required without transfer code' => [PayoutStatus::OtpRequired, null, 'Payout status "otp_required" requires a transfer code.'],
+    'failed without transfer code' => [PayoutStatus::Failed, null, 'Payout status "failed" requires a transfer code.'],
+    'reversed without transfer code' => [PayoutStatus::Reversed, null, 'Payout status "reversed" requires a transfer code.'],
+    'insufficient funds with transfer code' => [PayoutStatus::InsufficientFunds, 'TRF_impossible', 'Payout status "insufficient_funds" cannot have a transfer code.'],
+    'retryable rejection with transfer code' => [PayoutStatus::RetryableRejection, 'TRF_impossible', 'Payout status "retryable_rejection" cannot have a transfer code.'],
+    'permanent rejection with transfer code' => [PayoutStatus::PermanentRejection, 'TRF_impossible', 'Payout status "permanent_rejection" cannot have a transfer code.'],
 ]);
 
-it('freezes the factual payout attempt vocabulary', function (): void {
+it('freezes the factual payout status vocabulary', function (): void {
     expect(array_map(
-        static fn (PayoutAttemptStatus $status): string => $status->value,
-        PayoutAttemptStatus::cases(),
+        static fn (PayoutStatus $status): string => $status->value,
+        PayoutStatus::cases(),
     ))->toBe([
         'started',
         'ambiguous',

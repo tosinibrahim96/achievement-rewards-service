@@ -7,11 +7,11 @@ namespace App\Data\Cashback;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Enums\PaymentProvider;
 
-final readonly class CashbackPaymentClaim
+final readonly class CashbackPayoutClaim
 {
     public function __construct(
         public int $cashbackRewardId,
-        public int $payoutAttemptId,
+        public int $payoutId,
         public PaymentProvider $provider,
         public CashbackTransferRequest $request,
     ) {}

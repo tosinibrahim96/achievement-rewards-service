@@ -3,24 +3,23 @@
 declare(strict_types=1);
 
 use App\Actions\Cashback\HandlePaystackWebhook;
-use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Enums\ProviderWebhookReceiptResult;
 use App\Http\Middleware\AssignRequestId;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
-use App\Models\PayoutAttempt;
 use App\Models\ProviderWebhookReceipt;
 use App\Models\User;
 use App\Models\UserBadge;
@@ -59,33 +58,28 @@ final class CallbackWinningPaystackGateway implements CashbackTransferGateway
         ($this->callback)($request);
 
         return new CashbackTransferResult(
-            status: PayoutAttemptStatus::Pending,
+            status: PayoutStatus::Pending,
             transferCode: 'TRF_STALE_RESPONSE',
             httpStatus: 200,
             latencyMs: 9,
         );
     }
-
-    public function verifyTransfer(string $providerReference): CashbackTransferVerification
-    {
-        return new CashbackTransferVerification(null);
-    }
 }
 
-/** @return array{CashbackReward, PayoutAttempt} */
-function paystackWebhookAttempt(PayoutAttemptStatus $status = PayoutAttemptStatus::Pending): array
+/** @return array{CashbackReward, Payout} */
+function paystackWebhookPayout(PayoutStatus $status = PayoutStatus::Pending): array
 {
     $rewardStatus = match ($status) {
-        PayoutAttemptStatus::Started,
-        PayoutAttemptStatus::Ambiguous => CashbackRewardStatus::Processing,
-        PayoutAttemptStatus::Pending => CashbackRewardStatus::Pending,
-        PayoutAttemptStatus::Succeeded => CashbackRewardStatus::Paid,
-        PayoutAttemptStatus::InsufficientFunds => CashbackRewardStatus::AwaitingFunds,
-        PayoutAttemptStatus::RetryableRejection,
-        PayoutAttemptStatus::PermanentRejection,
-        PayoutAttemptStatus::OtpRequired,
-        PayoutAttemptStatus::Failed,
-        PayoutAttemptStatus::Reversed => CashbackRewardStatus::RequiresAttention,
+        PayoutStatus::Started,
+        PayoutStatus::Ambiguous => CashbackRewardStatus::Processing,
+        PayoutStatus::Pending => CashbackRewardStatus::Pending,
+        PayoutStatus::Succeeded => CashbackRewardStatus::Paid,
+        PayoutStatus::InsufficientFunds => CashbackRewardStatus::AwaitingFunds,
+        PayoutStatus::RetryableRejection,
+        PayoutStatus::PermanentRejection,
+        PayoutStatus::OtpRequired,
+        PayoutStatus::Failed,
+        PayoutStatus::Reversed => CashbackRewardStatus::RequiresAttention,
     };
     $user = User::factory()->create();
     $reward = CashbackReward::factory()
@@ -94,39 +88,39 @@ function paystackWebhookAttempt(PayoutAttemptStatus $status = PayoutAttemptStatu
         ->create([
             'provider' => PaymentProvider::Paystack,
             'status' => $rewardStatus,
-            'paid_at' => $status === PayoutAttemptStatus::Succeeded ? now()->subMinute() : null,
+            'paid_at' => $status === PayoutStatus::Succeeded ? now()->subMinute() : null,
             'last_attempted_at' => now()->subMinute(),
         ]);
     $account = PayoutAccount::factory()->for($user)->create([
         'provider' => PaymentProvider::Paystack,
         'provider_recipient_code' => 'RCP_WEBHOOK_CUSTOMER',
     ]);
-    $completedAt = $status === PayoutAttemptStatus::Started ? null : now()->subMinute();
+    $completedAt = $status === PayoutStatus::Started ? null : now()->subMinute();
     $transferCode = in_array($status, [
-        PayoutAttemptStatus::Started,
-        PayoutAttemptStatus::InsufficientFunds,
-        PayoutAttemptStatus::RetryableRejection,
-        PayoutAttemptStatus::PermanentRejection,
+        PayoutStatus::Started,
+        PayoutStatus::InsufficientFunds,
+        PayoutStatus::RetryableRejection,
+        PayoutStatus::PermanentRejection,
     ], true) ? null : 'TRF_WEBHOOK_TRANSFER';
-    $attempt = PayoutAttempt::factory()->create([
+    $payout = Payout::factory()->create([
         'cashback_reward_id' => $reward->id,
         'payout_account_id' => $account->id,
         'provider' => PaymentProvider::Paystack,
         'provider_recipient_code' => $account->provider_recipient_code,
         'status' => $status,
         'provider_transfer_code' => $transferCode,
-        'succeeded_at' => $status === PayoutAttemptStatus::Succeeded ? $completedAt : null,
-        'reversed_at' => $status === PayoutAttemptStatus::Reversed ? $completedAt : null,
+        'succeeded_at' => $status === PayoutStatus::Succeeded ? $completedAt : null,
+        'reversed_at' => $status === PayoutStatus::Reversed ? $completedAt : null,
         'completed_at' => $completedAt,
     ]);
 
-    return [$reward, $attempt];
+    return [$reward, $payout];
 }
 
 /** @return array<string, mixed> */
 function paystackWebhookPayload(
     CashbackReward $reward,
-    PayoutAttempt $attempt,
+    Payout $payout,
     string $event = 'transfer.success',
     string $status = 'success',
 ): array {
@@ -134,13 +128,13 @@ function paystackWebhookPayload(
         'event' => $event,
         'data' => [
             'reference' => $reward->provider_reference,
-            'transfer_code' => $attempt->provider_transfer_code ?? 'TRF_WEBHOOK_TRANSFER',
+            'transfer_code' => $payout->provider_transfer_code ?? 'TRF_WEBHOOK_TRANSFER',
             'amount' => $reward->amount_minor,
             'currency' => $reward->currency->value,
             'source' => 'balance',
             'status' => $status,
             'recipient' => [
-                'recipient_code' => $attempt->provider_recipient_code,
+                'recipient_code' => $payout->provider_recipient_code,
             ],
             'reason' => 'raw provider prose must be ignored',
             'customer' => ['email' => 'private@example.test'],
@@ -184,58 +178,58 @@ beforeEach(function (): void {
 });
 
 it('authenticates exact bytes and atomically applies a matching success callback', function (): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $completedAt = $attempt->completed_at;
-    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+    [$reward, $payout] = paystackWebhookPayout();
+    $completedAt = $payout->completed_at;
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
 
     $response = postPaystackWebhook($this, $body);
 
     $response->assertOk()->assertContent('')->assertHeader(AssignRequestId::HEADER);
     $reward->refresh();
-    $attempt->refresh();
+    $payout->refresh();
     $receipt = ProviderWebhookReceipt::query()->sole();
 
     expect($receipt->provider)->toBe(PaymentProvider::Paystack)
         ->and($receipt->body_hash)->toBe(hash('sha256', $body))
         ->and($receipt->event_type)->toBe('transfer.success')
         ->and($receipt->provider_reference)->toBe($reward->provider_reference)
-        ->and($receipt->payout_attempt_id)->toBe($attempt->id)
+        ->and($receipt->payout_id)->toBe($payout->id)
         ->and($receipt->result)->toBe(ProviderWebhookReceiptResult::Applied)
-        ->and($attempt->status)->toBe(PayoutAttemptStatus::Succeeded)
-        ->and($attempt->provider_transfer_code)->toBe('TRF_WEBHOOK_TRANSFER')
-        ->and($attempt->succeeded_at)->not->toBeNull()
-        ->and($attempt->completed_at?->equalTo($completedAt))->toBeTrue()
-        ->and($attempt->provider_error_code)->toBeNull()
+        ->and($payout->status)->toBe(PayoutStatus::Succeeded)
+        ->and($payout->provider_transfer_code)->toBe('TRF_WEBHOOK_TRANSFER')
+        ->and($payout->succeeded_at)->not->toBeNull()
+        ->and($payout->completed_at?->equalTo($completedAt))->toBeTrue()
+        ->and($payout->provider_error_code)->toBeNull()
         ->and($reward->status)->toBe(CashbackRewardStatus::Paid)
         ->and($reward->paid_at)->not->toBeNull()
-        ->and(PayoutAttempt::query()->count())->toBe(1);
+        ->and(Payout::query()->count())->toBe(1);
     Notification::assertNothingSent();
     Http::assertNothingSent();
 });
 
-it('applies a matching success callback from every open attempt state', function (
-    PayoutAttemptStatus $initialStatus,
+it('applies a matching success callback from every open payout state', function (
+    PayoutStatus $initialStatus,
 ): void {
-    [$reward, $attempt] = paystackWebhookAttempt($initialStatus);
-    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+    [$reward, $payout] = paystackWebhookPayout($initialStatus);
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
 
     postPaystackWebhook($this, $body)->assertOk();
 
     expect(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Applied)
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Succeeded)
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Succeeded)
         ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Paid);
 })->with([
-    'started' => PayoutAttemptStatus::Started,
-    'ambiguous' => PayoutAttemptStatus::Ambiguous,
-    'OTP required' => PayoutAttemptStatus::OtpRequired,
+    'started' => PayoutStatus::Started,
+    'ambiguous' => PayoutStatus::Ambiguous,
+    'OTP required' => PayoutStatus::OtpRequired,
 ]);
 
 it('rejects missing malformed mismatched and byte-mutated signatures without persistence', function (
     string $signatureKind,
 ): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+    [$reward, $payout] = paystackWebhookPayout();
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
     [$sentBody, $signature, $includeSignature] = match ($signatureKind) {
         'missing' => [$body, null, false],
         'uppercase' => [$body, strtoupper(paystackWebhookSignature($body)), true],
@@ -250,7 +244,7 @@ it('rejects missing malformed mismatched and byte-mutated signatures without per
         ->assertJsonPath('code', 'invalid_webhook_signature')
         ->assertHeaderMissing('WWW-Authenticate');
     expect(ProviderWebhookReceipt::query()->count())->toBe(0)
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Pending)
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Pending)
         ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Pending);
     Notification::assertNothingSent();
 })->with(['missing', 'uppercase', 'wrong', 'mutated bytes']);
@@ -312,11 +306,11 @@ it('records authentic malformed input and safe unsupported events without mutati
     ProviderWebhookReceiptResult $expectedResult,
     ?string $expectedEvent,
 ): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
+    [$reward, $payout] = paystackWebhookPayout();
 
     $body = str_replace(['__REFERENCE__', '__RECIPIENT__'], [
         $reward->provider_reference,
-        $attempt->provider_recipient_code,
+        $payout->provider_recipient_code,
     ], $body);
 
     postPaystackWebhook($this, $body)->assertOk();
@@ -325,8 +319,8 @@ it('records authentic malformed input and safe unsupported events without mutati
     $receipt = ProviderWebhookReceipt::query()->sole();
     expect($receipt->result)->toBe($expectedResult)
         ->and($receipt->event_type)->toBe($expectedEvent)
-        ->and($receipt->payout_attempt_id)->toBeNull()
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Pending)
+        ->and($receipt->payout_id)->toBeNull()
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Pending)
         ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Pending)
         ->and($kind)->toBeString();
     Notification::assertNothingSent();
@@ -365,15 +359,15 @@ it('records authentic malformed input and safe unsupported events without mutati
 ]);
 
 it('strictly rejects wrong callback shapes and scalar types without coercion', function (Closure $mutate): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $payload = paystackWebhookPayload($reward, $attempt);
+    [$reward, $payout] = paystackWebhookPayout();
+    $payload = paystackWebhookPayload($reward, $payout);
     $mutate($payload);
 
     postPaystackWebhook($this, encodePaystackWebhook($payload))->assertOk();
 
     expect(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Invalid)
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Pending)
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Pending)
         ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Pending);
 })->with([
     'data list' => [static function (array &$payload): void {
@@ -414,20 +408,20 @@ it('strictly rejects wrong callback shapes and scalar types without coercion', f
     }],
 ]);
 
-it('distinguishes unknown references from mismatched stored payment facts', function (
+it('distinguishes unknown references from mismatched stored payout facts', function (
     Closure $mutate,
     ProviderWebhookReceiptResult $expectedResult,
 ): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $payload = paystackWebhookPayload($reward, $attempt);
+    [$reward, $payout] = paystackWebhookPayout();
+    $payload = paystackWebhookPayload($reward, $payout);
     $mutate($payload);
 
     postPaystackWebhook($this, encodePaystackWebhook($payload))->assertOk();
 
     $receipt = ProviderWebhookReceipt::query()->sole();
     expect($receipt->result)->toBe($expectedResult)
-        ->and($receipt->payout_attempt_id)->toBeNull()
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Pending)
+        ->and($receipt->payout_id)->toBeNull()
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Pending)
         ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Pending);
 })->with([
     'unknown reference' => [
@@ -458,8 +452,8 @@ it('distinguishes unknown references from mismatched stored payment facts', func
 
 it('deduplicates exact delivery but records a byte-different semantic duplicate as unchanged', function (): void {
     Log::spy();
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $payload = paystackWebhookPayload($reward, $attempt);
+    [$reward, $payout] = paystackWebhookPayout();
+    $payload = paystackWebhookPayload($reward, $payout);
     $compact = encodePaystackWebhook($payload);
     $pretty = encodePaystackWebhook($payload, JSON_PRETTY_PRINT);
 
@@ -472,7 +466,7 @@ it('deduplicates exact delivery but records a byte-different semantic duplicate 
             ProviderWebhookReceiptResult::Applied,
             ProviderWebhookReceiptResult::Unchanged,
         ])
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Succeeded)
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Succeeded)
         ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Paid);
     Log::shouldHaveReceived('info')->once()->with('paystack.webhook.recorded', Mockery::type('array'));
     Log::shouldHaveReceived('debug')->once()->with('paystack.webhook.recorded', Mockery::type('array'));
@@ -485,8 +479,8 @@ it('logs each receipt result at its documented severity', function (
     string $expectedLevel,
 ): void {
     Log::spy();
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $payload = paystackWebhookPayload($reward, $attempt);
+    [$reward, $payout] = paystackWebhookPayout();
+    $payload = paystackWebhookPayload($reward, $payout);
     $body = match ($kind) {
         'unsupported' => '{"event":"transfer.pending"}',
         'invalid' => '{"event":null}',
@@ -530,23 +524,23 @@ it('logs each receipt result at its documented severity', function (
 it('applies failure and reversal facts with safe local errors and one support request', function (
     string $event,
     string $providerStatus,
-    PayoutAttemptStatus $expectedStatus,
+    PayoutStatus $expectedStatus,
     CashbackTransferErrorCode $expectedError,
 ): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
+    [$reward, $payout] = paystackWebhookPayout();
     $body = encodePaystackWebhook(
-        paystackWebhookPayload($reward, $attempt, $event, $providerStatus),
+        paystackWebhookPayload($reward, $payout, $event, $providerStatus),
     );
 
     postPaystackWebhook($this, $body)->assertOk();
     postPaystackWebhook($this, $body)->assertOk();
 
     $reward->refresh();
-    $attempt->refresh();
-    expect($attempt->status)->toBe($expectedStatus)
-        ->and($attempt->provider_error_code)->toBe($expectedError->value)
-        ->and($attempt->provider_error_message)->not->toContain('raw provider prose')
-        ->and($attempt->support_alert_requested_at)->not->toBeNull()
+    $payout->refresh();
+    expect($payout->status)->toBe($expectedStatus)
+        ->and($payout->provider_error_code)->toBe($expectedError->value)
+        ->and($payout->provider_error_message)->not->toContain('raw provider prose')
+        ->and($payout->support_alert_requested_at)->not->toBeNull()
         ->and($reward->status)->toBe(CashbackRewardStatus::RequiresAttention)
         ->and($reward->paid_at)->toBeNull()
         ->and($reward->last_error_code)->toBe($expectedError->value);
@@ -556,46 +550,46 @@ it('applies failure and reversal facts with safe local errors and one support re
     'failure' => [
         'transfer.failed',
         'failed',
-        PayoutAttemptStatus::Failed,
+        PayoutStatus::Failed,
         CashbackTransferErrorCode::TransferFailed,
     ],
     'reversal before local success' => [
         'transfer.reversed',
         'reversed',
-        PayoutAttemptStatus::Reversed,
+        PayoutStatus::Reversed,
         CashbackTransferErrorCode::TransferReversed,
     ],
 ]);
 
 it('accepts only reversal after success and preserves the original success timestamp', function (): void {
-    [$reward, $attempt] = paystackWebhookAttempt(PayoutAttemptStatus::Succeeded);
-    $succeededAt = $attempt->succeeded_at;
+    [$reward, $payout] = paystackWebhookPayout(PayoutStatus::Succeeded);
+    $succeededAt = $payout->succeeded_at;
     $failedBody = encodePaystackWebhook(
-        paystackWebhookPayload($reward, $attempt, 'transfer.failed', 'failed'),
+        paystackWebhookPayload($reward, $payout, 'transfer.failed', 'failed'),
     );
     $reversedBody = encodePaystackWebhook(
-        paystackWebhookPayload($reward, $attempt, 'transfer.reversed', 'reversed'),
+        paystackWebhookPayload($reward, $payout, 'transfer.reversed', 'reversed'),
     );
 
     postPaystackWebhook($this, $failedBody)->assertOk();
-    expect($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Succeeded)
+    expect($payout->fresh()?->status)->toBe(PayoutStatus::Succeeded)
         ->and(ProviderWebhookReceipt::query()->latest('id')->firstOrFail()->result)
         ->toBe(ProviderWebhookReceiptResult::Unchanged);
 
     postPaystackWebhook($this, $reversedBody)->assertOk();
-    $attempt->refresh();
+    $payout->refresh();
     $reward->refresh();
 
-    expect($attempt->status)->toBe(PayoutAttemptStatus::Reversed)
-        ->and($attempt->succeeded_at?->equalTo($succeededAt))->toBeTrue()
-        ->and($attempt->reversed_at)->not->toBeNull()
+    expect($payout->status)->toBe(PayoutStatus::Reversed)
+        ->and($payout->succeeded_at?->equalTo($succeededAt))->toBeTrue()
+        ->and($payout->reversed_at)->not->toBeNull()
         ->and($reward->status)->toBe(CashbackRewardStatus::RequiresAttention)
         ->and($reward->paid_at)->toBeNull();
     Notification::assertSentOnDemandTimes(CashbackPayoutRequiresAttention::class, 1);
 });
 
 it('retains a safe reference for an unsupported event without interpreting its payout data', function (): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
+    [$reward, $payout] = paystackWebhookPayout();
     $body = encodePaystackWebhook([
         'event' => 'transfer.pending',
         'data' => [
@@ -611,51 +605,51 @@ it('retains a safe reference for an unsupported event without interpreting its p
     expect($receipt->result)->toBe(ProviderWebhookReceiptResult::Unsupported)
         ->and($receipt->event_type)->toBe('transfer.pending')
         ->and($receipt->provider_reference)->toBe($reward->provider_reference)
-        ->and($receipt->payout_attempt_id)->toBeNull()
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Pending);
+        ->and($receipt->payout_id)->toBeNull()
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Pending);
     Notification::assertNothingSent();
 });
 
-it('leaves a matching payment unchanged when reward and attempt statuses disagree', function (
-    PayoutAttemptStatus $attemptStatus,
+it('leaves a matching payout unchanged when reward and payout statuses disagree', function (
+    PayoutStatus $payoutStatus,
     CashbackRewardStatus $wrongRewardStatus,
     string $event,
     string $transferStatus,
 ): void {
-    [$reward, $attempt] = paystackWebhookAttempt($attemptStatus);
+    [$reward, $payout] = paystackWebhookPayout($payoutStatus);
     $reward->update(['status' => $wrongRewardStatus]);
     $body = encodePaystackWebhook(
-        paystackWebhookPayload($reward, $attempt, $event, $transferStatus),
+        paystackWebhookPayload($reward, $payout, $event, $transferStatus),
     );
 
     postPaystackWebhook($this, $body)->assertOk();
 
     expect(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Unchanged)
-        ->and($attempt->fresh()?->status)->toBe($attemptStatus)
+        ->and($payout->fresh()?->status)->toBe($payoutStatus)
         ->and($reward->fresh()?->status)->toBe($wrongRewardStatus);
     Notification::assertNothingSent();
 })->with([
-    'started attempt with pending reward' => [
-        PayoutAttemptStatus::Started,
+    'started payout with pending reward' => [
+        PayoutStatus::Started,
         CashbackRewardStatus::Pending,
         'transfer.success',
         'success',
     ],
-    'pending attempt with processing reward' => [
-        PayoutAttemptStatus::Pending,
+    'pending payout with processing reward' => [
+        PayoutStatus::Pending,
         CashbackRewardStatus::Processing,
         'transfer.success',
         'success',
     ],
-    'OTP attempt with processing reward' => [
-        PayoutAttemptStatus::OtpRequired,
+    'OTP payout with processing reward' => [
+        PayoutStatus::OtpRequired,
         CashbackRewardStatus::Processing,
         'transfer.success',
         'success',
     ],
-    'succeeded attempt with processing reward' => [
-        PayoutAttemptStatus::Succeeded,
+    'succeeded payout with processing reward' => [
+        PayoutStatus::Succeeded,
         CashbackRewardStatus::Processing,
         'transfer.reversed',
         'reversed',
@@ -668,36 +662,36 @@ it('still attempts support when the committed callback receipt log fails', funct
         ->once()
         ->with('paystack.webhook.recorded', Mockery::type('array'))
         ->andThrow(new RuntimeException('log unavailable'));
-    [$reward, $attempt] = paystackWebhookAttempt();
+    [$reward, $payout] = paystackWebhookPayout();
     $body = encodePaystackWebhook(
-        paystackWebhookPayload($reward, $attempt, 'transfer.failed', 'failed'),
+        paystackWebhookPayload($reward, $payout, 'transfer.failed', 'failed'),
     );
 
     postPaystackWebhook($this, $body)->assertOk();
 
-    expect($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Failed)
-        ->and($attempt->fresh()?->support_alert_requested_at)->not->toBeNull();
+    expect($payout->fresh()?->status)->toBe(PayoutStatus::Failed)
+        ->and($payout->fresh()?->support_alert_requested_at)->not->toBeNull();
     Notification::assertSentOnDemandTimes(CashbackPayoutRequiresAttention::class, 1);
 });
 
-it('does not reopen conclusive failed reversed or pre-creation outcomes', function (
-    PayoutAttemptStatus $initialStatus,
+it('does not reopen failed reversed or statuses where no transfer was created', function (
+    PayoutStatus $initialStatus,
 ): void {
-    [$reward, $attempt] = paystackWebhookAttempt($initialStatus);
-    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+    [$reward, $payout] = paystackWebhookPayout($initialStatus);
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
 
     postPaystackWebhook($this, $body)->assertOk();
 
-    expect($attempt->fresh()?->status)->toBe($initialStatus)
+    expect($payout->fresh()?->status)->toBe($initialStatus)
         ->and(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Unchanged);
     Notification::assertNothingSent();
 })->with([
-    PayoutAttemptStatus::Failed,
-    PayoutAttemptStatus::Reversed,
-    PayoutAttemptStatus::InsufficientFunds,
-    PayoutAttemptStatus::RetryableRejection,
-    PayoutAttemptStatus::PermanentRejection,
+    PayoutStatus::Failed,
+    PayoutStatus::Reversed,
+    PayoutStatus::InsufficientFunds,
+    PayoutStatus::RetryableRejection,
+    PayoutStatus::PermanentRejection,
 ]);
 
 it('lets a real callback win before the older initiation response is stored', function (): void {
@@ -730,23 +724,23 @@ it('lets a real callback win before the older initiation response is stored', fu
             app(HandlePaystackWebhook::class)->handle($body, paystackWebhookSignature($body));
         },
     );
-    $action = new ProcessCashbackPayment(
+    $action = new ProcessCashbackPayout(
         new PaymentProviderRegistry([], [$gateway], PaymentProvider::Paystack->value),
         app(RequestCashbackPayoutSupport::class),
     );
 
-    $attempt = $action->handle($reward->id);
+    $payout = $action->handle($reward->id);
     $reward->refresh();
 
-    expect($attempt?->status)->toBe(PayoutAttemptStatus::Succeeded)
-        ->and($attempt?->provider_transfer_code)->toBe('TRF_CALLBACK_WON')
+    expect($payout?->status)->toBe(PayoutStatus::Succeeded)
+        ->and($payout?->provider_transfer_code)->toBe('TRF_CALLBACK_WON')
         ->and($reward->status)->toBe(CashbackRewardStatus::Paid)
         ->and(ProviderWebhookReceipt::query()->sole()->result)
         ->toBe(ProviderWebhookReceiptResult::Applied);
     Log::shouldHaveReceived('info')->with(
         'cashback.payout.processed',
         Mockery::on(fn (array $context): bool => $context['state_changed'] === false
-            && $context['attempt_status'] === PayoutAttemptStatus::Succeeded->value
+            && $context['payout_status'] === PayoutStatus::Succeeded->value
             && $context['provider_http_status'] === 200
             && $context['provider_latency_ms'] === 9),
     )->once();
@@ -754,8 +748,8 @@ it('lets a real callback win before the older initiation response is stored', fu
 
 it('rolls back payout and receipt together and emits no milestone log on database failure', function (): void {
     Log::spy();
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+    [$reward, $payout] = paystackWebhookPayout();
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
 
     DB::unprepared(<<<'SQL'
         CREATE OR REPLACE FUNCTION fail_applied_webhook_receipt()
@@ -784,9 +778,9 @@ it('rolls back payout and receipt together and emits no milestone log on databas
     }
 
     expect(ProviderWebhookReceipt::query()->count())->toBe(0)
-        ->and($attempt->fresh()?->status)->toBe(PayoutAttemptStatus::Pending)
+        ->and($payout->fresh()?->status)->toBe(PayoutStatus::Pending)
         ->and($reward->fresh()?->status)->toBe(CashbackRewardStatus::Pending)
-        ->and($attempt->fresh()?->support_alert_requested_at)->toBeNull();
+        ->and($payout->fresh()?->support_alert_requested_at)->toBeNull();
     Log::shouldNotHaveReceived('info', ['paystack.webhook.recorded', Mockery::type('array')]);
     Log::shouldNotHaveReceived('debug', ['paystack.webhook.recorded', Mockery::type('array')]);
     Log::shouldNotHaveReceived('warning', ['paystack.webhook.recorded', Mockery::type('array')]);
@@ -794,29 +788,29 @@ it('rolls back payout and receipt together and emits no milestone log on databas
 });
 
 it('logs each new receipt after commit with only the approved local fields and context', function (): void {
-    [$reward, $attempt] = paystackWebhookAttempt();
-    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $attempt));
+    [$reward, $payout] = paystackWebhookPayout();
+    $body = encodePaystackWebhook(paystackWebhookPayload($reward, $payout));
     Log::shouldReceive('info')->once()->with(
         'paystack.webhook.recorded',
-        Mockery::on(function (array $context) use ($reward, $attempt): bool {
+        Mockery::on(function (array $context) use ($reward, $payout): bool {
             return array_keys($context) === [
                 'receipt_id',
                 'event_type',
                 'result',
                 'cashback_reward_id',
-                'payout_attempt_id',
-                'old_attempt_status',
-                'new_attempt_status',
+                'payout_id',
+                'old_payout_status',
+                'new_payout_status',
                 'reward_status',
                 'correlation_id',
             ]
                 && $context['cashback_reward_id'] === $reward->id
-                && $context['payout_attempt_id'] === $attempt->id
+                && $context['payout_id'] === $payout->id
                 && $context['correlation_id'] === $reward->correlation_id
                 && Context::get(AssignRequestId::ATTRIBUTE) !== null
                 && Context::get('correlation_id') === $reward->correlation_id
                 && ! str_contains(json_encode($context, JSON_THROW_ON_ERROR), $reward->provider_reference)
-                && ! str_contains(json_encode($context, JSON_THROW_ON_ERROR), $attempt->provider_recipient_code);
+                && ! str_contains(json_encode($context, JSON_THROW_ON_ERROR), $payout->provider_recipient_code);
         }),
     );
 

@@ -7,7 +7,7 @@ use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentProviderFailure;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Exceptions\Payments\PaymentProviderException;
 use App\Infrastructure\Payments\PaystackCashbackTransferGateway;
 use Illuminate\Http\Client\Request;
@@ -50,7 +50,7 @@ beforeEach(function (): void {
 
 it('sends the exact stable-reference balance-source transfer and maps provider lifecycle facts', function (
     string $rawStatus,
-    PayoutAttemptStatus $expectedStatus,
+    PayoutStatus $expectedStatus,
     ?CashbackTransferErrorCode $expectedErrorCode,
 ): void {
     Http::fake(['*' => Http::response([
@@ -82,15 +82,15 @@ it('sends the exact stable-reference balance-source transfer and maps provider l
         && $sent->hasHeader('Authorization', 'Bearer sk_test_inert_transfer_key'));
     Http::assertSentCount(1);
 })->with([
-    'test success' => ['success', PayoutAttemptStatus::Succeeded, null],
-    'live-like pending' => ['pending', PayoutAttemptStatus::Pending, null],
-    'defensive received' => ['received', PayoutAttemptStatus::Pending, null],
-    'unexpected OTP' => ['otp', PayoutAttemptStatus::OtpRequired, CashbackTransferErrorCode::OtpRequired],
-    'provider failed' => ['failed', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'provider abandoned' => ['abandoned', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'provider blocked' => ['blocked', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'provider-created rejection' => ['rejected', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'provider reversal' => ['reversed', PayoutAttemptStatus::Reversed, CashbackTransferErrorCode::TransferReversed],
+    'test success' => ['success', PayoutStatus::Succeeded, null],
+    'live-like pending' => ['pending', PayoutStatus::Pending, null],
+    'defensive received' => ['received', PayoutStatus::Pending, null],
+    'unexpected OTP' => ['otp', PayoutStatus::OtpRequired, CashbackTransferErrorCode::OtpRequired],
+    'provider failed' => ['failed', PayoutStatus::Failed, CashbackTransferErrorCode::TransferFailed],
+    'provider abandoned' => ['abandoned', PayoutStatus::Failed, CashbackTransferErrorCode::TransferFailed],
+    'provider blocked' => ['blocked', PayoutStatus::Failed, CashbackTransferErrorCode::TransferFailed],
+    'rejected transfer with a code' => ['rejected', PayoutStatus::Failed, CashbackTransferErrorCode::TransferFailed],
+    'provider reversal' => ['reversed', PayoutStatus::Reversed, CashbackTransferErrorCode::TransferReversed],
 ]);
 
 it('stops on unexpected OTP and calls no finalization resend or setting endpoint', function (): void {
@@ -103,7 +103,7 @@ it('stops on unexpected OTP and calls no finalization resend or setting endpoint
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutAttemptStatus::OtpRequired)
+    expect($result->status)->toBe(PayoutStatus::OtpRequired)
         ->and($result->transferCode)->toBe('TRF_paystack_contract');
     Http::assertSentCount(1);
     Http::assertNotSent(fn (Request $request): bool => in_array(
@@ -128,11 +128,12 @@ it('treats malformed or contradictory created responses as ambiguous', function 
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutAttemptStatus::Ambiguous)
+    expect($result->status)->toBe(PayoutStatus::Ambiguous)
         ->and($result->errorCode)->toBe($errorCode)
         ->and($result->errorMessage)->toBe('Paystack did not return a conclusive transfer result.');
     Http::assertSentCount(1);
 })->with([
+    'list-shaped transfer data' => [[], CashbackTransferErrorCode::ProviderInvalidResponse],
     'reference mismatch' => [paystackTransferDataForTest('success', ['reference' => 'cashback-01wrongreferencevalue']), CashbackTransferErrorCode::ProviderInvalidResponse],
     'amount mismatch' => [paystackTransferDataForTest('success', ['amount' => 30_001]), CashbackTransferErrorCode::ProviderInvalidResponse],
     'currency mismatch' => [paystackTransferDataForTest('success', ['currency' => 'GHS']), CashbackTransferErrorCode::ProviderInvalidResponse],
@@ -141,7 +142,7 @@ it('treats malformed or contradictory created responses as ambiguous', function 
     'unknown lifecycle status' => [paystackTransferDataForTest('new_provider_state'), CashbackTransferErrorCode::ProviderStatusUnknown],
 ]);
 
-it('never treats a contradictory non-success HTTP envelope as proof of payment', function (): void {
+it('never treats a contradictory non-success HTTP envelope as proof of a created transfer', function (): void {
     Http::fake(['*' => Http::response([
         'status' => true,
         'message' => 'Contradictory upstream response',
@@ -151,19 +152,19 @@ it('never treats a contradictory non-success HTTP envelope as proof of payment',
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutAttemptStatus::Ambiguous)
+    expect($result->status)->toBe(PayoutStatus::Ambiguous)
         ->and($result->transferCode)->toBe('TRF_paystack_contract')
         ->and($result->httpStatus)->toBe(HttpResponse::HTTP_INTERNAL_SERVER_ERROR)
         ->and($result->errorCode)->toBe(CashbackTransferErrorCode::ProviderInvalidResponse);
     Http::assertSentCount(1);
 });
 
-it('maps documented pre-creation rejection envelopes without persisting raw provider messages', function (
+it('maps rejected requests with no transfer data without persisting raw provider messages', function (
     int $httpStatus,
     bool|string $outerStatus,
     string $message,
     ?string $providerCode,
-    PayoutAttemptStatus $attemptStatus,
+    PayoutStatus $payoutStatus,
     CashbackTransferErrorCode $errorCode,
 ): void {
     $body = [
@@ -180,7 +181,7 @@ it('maps documented pre-creation rejection envelopes without persisting raw prov
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe($attemptStatus)
+    expect($result->status)->toBe($payoutStatus)
         ->and($result->transferCode)->toBeNull()
         ->and($result->httpStatus)->toBe($httpStatus)
         ->and($result->errorCode)->toBe($errorCode)
@@ -188,21 +189,21 @@ it('maps documented pre-creation rejection envelopes without persisting raw prov
         ->and(json_encode($result, JSON_THROW_ON_ERROR))->not->toContain('0000000000');
     Http::assertSentCount(1);
 })->with([
-    'insufficient balance US spelling' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Your balance is not enough to fulfill this request', null, PayoutAttemptStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
-    'insufficient balance UK spelling' => [HttpResponse::HTTP_BAD_REQUEST, 'false', 'Your balance is not enough to fulfil this request', null, PayoutAttemptStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
-    'insufficient balance normalized whitespace case and punctuation' => [HttpResponse::HTTP_BAD_REQUEST, false, "  YOUR\tBALANCE  IS NOT ENOUGH TO FULFILL THIS REQUEST!!  ", null, PayoutAttemptStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
-    'near-miss balance message remains rejected' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Your balance is not enough to fulfil this request right now', null, PayoutAttemptStatus::PermanentRejection, CashbackTransferErrorCode::ProviderRejected],
-    'rate limited' => [HttpResponse::HTTP_TOO_MANY_REQUESTS, false, 'Rate limit exceeded!', 'rate_limited', PayoutAttemptStatus::RetryableRejection, CashbackTransferErrorCode::RateLimited],
-    'rate-limited provider code' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Request rejected', 'rate_limited', PayoutAttemptStatus::RetryableRejection, CashbackTransferErrorCode::RateLimited],
-    'recipient validation' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Recipient 0000000000 specified is invalid', 'missing_params', PayoutAttemptStatus::PermanentRejection, CashbackTransferErrorCode::ProviderRejected],
-    'invalid credential' => [HttpResponse::HTTP_UNAUTHORIZED, false, 'Invalid key', null, PayoutAttemptStatus::PermanentRejection, CashbackTransferErrorCode::ProviderUnavailable],
-    'forbidden credential' => [HttpResponse::HTTP_FORBIDDEN, false, 'Transfers are unavailable', null, PayoutAttemptStatus::PermanentRejection, CashbackTransferErrorCode::ProviderUnavailable],
-    'server ambiguity' => [HttpResponse::HTTP_INTERNAL_SERVER_ERROR, false, 'System Malfunction 0000000000', null, PayoutAttemptStatus::Ambiguous, CashbackTransferErrorCode::ProviderUnavailable],
-    'insufficient phrase on server error' => [HttpResponse::HTTP_INTERNAL_SERVER_ERROR, false, 'Your balance is not enough to fulfill this request', null, PayoutAttemptStatus::Ambiguous, CashbackTransferErrorCode::ProviderUnavailable],
-    'duplicate reference ambiguity' => [HttpResponse::HTTP_BAD_REQUEST, false, 'A transfer with this reference already exists', null, PayoutAttemptStatus::Ambiguous, CashbackTransferErrorCode::DuplicateReference],
+    'insufficient balance US spelling' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Your balance is not enough to fulfill this request', null, PayoutStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
+    'insufficient balance UK spelling' => [HttpResponse::HTTP_BAD_REQUEST, 'false', 'Your balance is not enough to fulfil this request', null, PayoutStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
+    'insufficient balance normalized whitespace case and punctuation' => [HttpResponse::HTTP_BAD_REQUEST, false, "  YOUR\tBALANCE  IS NOT ENOUGH TO FULFILL THIS REQUEST!!  ", null, PayoutStatus::InsufficientFunds, CashbackTransferErrorCode::InsufficientFunds],
+    'near-miss balance message remains rejected' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Your balance is not enough to fulfil this request right now', null, PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderRejected],
+    'rate limited' => [HttpResponse::HTTP_TOO_MANY_REQUESTS, false, 'Rate limit exceeded!', 'rate_limited', PayoutStatus::RetryableRejection, CashbackTransferErrorCode::RateLimited],
+    'rate-limited provider code' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Request rejected', 'rate_limited', PayoutStatus::RetryableRejection, CashbackTransferErrorCode::RateLimited],
+    'recipient validation' => [HttpResponse::HTTP_BAD_REQUEST, false, 'Recipient 0000000000 specified is invalid', 'missing_params', PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderRejected],
+    'invalid credential' => [HttpResponse::HTTP_UNAUTHORIZED, false, 'Invalid key', null, PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderUnavailable],
+    'forbidden credential' => [HttpResponse::HTTP_FORBIDDEN, false, 'Transfers are unavailable', null, PayoutStatus::PermanentRejection, CashbackTransferErrorCode::ProviderUnavailable],
+    'server ambiguity' => [HttpResponse::HTTP_INTERNAL_SERVER_ERROR, false, 'System Malfunction 0000000000', null, PayoutStatus::Ambiguous, CashbackTransferErrorCode::ProviderUnavailable],
+    'insufficient phrase on server error' => [HttpResponse::HTTP_INTERNAL_SERVER_ERROR, false, 'Your balance is not enough to fulfill this request', null, PayoutStatus::Ambiguous, CashbackTransferErrorCode::ProviderUnavailable],
+    'duplicate reference ambiguity' => [HttpResponse::HTTP_BAD_REQUEST, false, 'A transfer with this reference already exists', null, PayoutStatus::Ambiguous, CashbackTransferErrorCode::DuplicateReference],
 ]);
 
-it('never treats a rejected envelope carrying a transfer identity as pre-creation', function (): void {
+it('treats a rejected response containing transfer data as ambiguous', function (): void {
     Http::fake(['*' => Http::response([
         'status' => false,
         'message' => 'Rate limit exceeded after an uncertain provider transition',
@@ -213,13 +214,13 @@ it('never treats a rejected envelope carrying a transfer identity as pre-creatio
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutAttemptStatus::Ambiguous)
+    expect($result->status)->toBe(PayoutStatus::Ambiguous)
         ->and($result->transferCode)->toBe('TRF_paystack_contract')
         ->and($result->errorCode)->toBe(CashbackTransferErrorCode::ProviderInvalidResponse);
     Http::assertSentCount(1);
 });
 
-it('never treats rejected provider-created facts without a transfer code as pre-creation', function (): void {
+it('treats rejected transfer data without a transfer code as ambiguous', function (): void {
     Http::fake(['*' => Http::response([
         'status' => false,
         'message' => 'Your balance is not enough to fulfill this request',
@@ -229,7 +230,7 @@ it('never treats rejected provider-created facts without a transfer code as pre-
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutAttemptStatus::Ambiguous)
+    expect($result->status)->toBe(PayoutStatus::Ambiguous)
         ->and($result->transferCode)->toBeNull()
         ->and($result->errorCode)->toBe(CashbackTransferErrorCode::ProviderInvalidResponse);
     Http::assertSentCount(1);
@@ -252,7 +253,7 @@ it('normalizes malformed or timed-out POST results to one ambiguous observation 
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutAttemptStatus::Ambiguous)
+    expect($result->status)->toBe(PayoutStatus::Ambiguous)
         ->and($result->errorCode)->toBe($expectedCode)
         ->and($result->transferCode)->toBeNull();
     Http::assertSentCount(1);
@@ -262,22 +263,6 @@ it('normalizes malformed or timed-out POST results to one ambiguous observation 
     'opaque server failure' => ['opaque-server-error', CashbackTransferErrorCode::ProviderUnavailable],
     'malformed JSON' => ['malformed', CashbackTransferErrorCode::ProviderInvalidResponse],
 ]);
-
-it('never converts contradictory not-found data into conclusive transfer absence', function (): void {
-    Http::fake(['*' => Http::response([
-        'status' => false,
-        'message' => 'Transfer not found',
-        'data' => paystackTransferDataForTest('pending'),
-    ], HttpResponse::HTTP_NOT_FOUND)]);
-
-    $result = app(PaystackCashbackTransferGateway::class)
-        ->verifyTransfer(paystackTransferRequestForTest()->providerReference)
-        ->result;
-
-    expect($result?->status)->toBe(PayoutAttemptStatus::Ambiguous)
-        ->and($result?->transferCode)->toBe('TRF_paystack_contract')
-        ->and($result?->errorCode)->toBe(CashbackTransferErrorCode::ProviderInvalidResponse);
-});
 
 it('rejects an invalid stored reference before sending provider work', function (): void {
     Http::fake();
@@ -290,7 +275,7 @@ it('rejects an invalid stored reference before sending provider work', function 
 
     $result = app(PaystackCashbackTransferGateway::class)->initiateTransfer($invalid);
 
-    expect($result->status)->toBe(PayoutAttemptStatus::PermanentRejection)
+    expect($result->status)->toBe(PayoutStatus::PermanentRejection)
         ->and($result->errorCode)->toBe(CashbackTransferErrorCode::InvalidProviderReference);
     Http::assertNothingSent();
 });
@@ -302,7 +287,7 @@ it('rejects missing local test configuration conclusively before provider I/O', 
     $result = app(PaystackCashbackTransferGateway::class)
         ->initiateTransfer(paystackTransferRequestForTest());
 
-    expect($result->status)->toBe(PayoutAttemptStatus::PermanentRejection)
+    expect($result->status)->toBe(PayoutStatus::PermanentRejection)
         ->and($result->transferCode)->toBeNull()
         ->and($result->errorCode)->toBe(CashbackTransferErrorCode::ProviderUnavailable)
         ->and($result->errorMessage)->toBe('Paystack is not configured for test transfers.');
@@ -405,158 +390,4 @@ it('keeps balance transport and provider failures typed without exposing provide
     'unauthorized' => ['unauthorized', PaymentProviderFailure::Unavailable],
     'rate limited' => ['rate-limited', PaymentProviderFailure::Unavailable],
     'server failure' => ['server', PaymentProviderFailure::Unavailable],
-]);
-
-it('maps every relevant provider lifecycle fact during reference verification', function (
-    string $rawStatus,
-    PayoutAttemptStatus $expectedStatus,
-    ?CashbackTransferErrorCode $expectedErrorCode,
-): void {
-    Http::fake(['*' => Http::response([
-        'status' => true,
-        'message' => 'Transfer retrieved',
-        'data' => paystackTransferDataForTest($rawStatus),
-    ])]);
-
-    $result = app(PaystackCashbackTransferGateway::class)
-        ->verifyTransfer(paystackTransferRequestForTest()->providerReference)
-        ->result;
-
-    expect($result)->not->toBeNull()
-        ->and($result?->status)->toBe($expectedStatus)
-        ->and($result?->transferCode)->toBe('TRF_paystack_contract')
-        ->and($result?->errorCode)->toBe($expectedErrorCode);
-    Http::assertSentCount(1);
-})->with([
-    'success' => ['success', PayoutAttemptStatus::Succeeded, null],
-    'pending' => ['pending', PayoutAttemptStatus::Pending, null],
-    'received' => ['received', PayoutAttemptStatus::Pending, null],
-    'OTP' => ['otp', PayoutAttemptStatus::OtpRequired, CashbackTransferErrorCode::OtpRequired],
-    'failed' => ['failed', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'abandoned' => ['abandoned', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'blocked' => ['blocked', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'rejected' => ['rejected', PayoutAttemptStatus::Failed, CashbackTransferErrorCode::TransferFailed],
-    'reversed' => ['reversed', PayoutAttemptStatus::Reversed, CashbackTransferErrorCode::TransferReversed],
-    'unknown' => ['provider_future_state', PayoutAttemptStatus::Ambiguous, CashbackTransferErrorCode::ProviderStatusUnknown],
-]);
-
-it('keeps malformed or contradictory verification success envelopes ambiguous rather than absent', function (
-    array $data,
-    CashbackTransferErrorCode $expectedCode,
-): void {
-    Http::fake(['*' => Http::response([
-        'status' => true,
-        'data' => $data,
-    ])]);
-
-    $verification = app(PaystackCashbackTransferGateway::class)
-        ->verifyTransfer(paystackTransferRequestForTest()->providerReference);
-
-    expect($verification->result?->status)->toBe(PayoutAttemptStatus::Ambiguous)
-        ->and($verification->result?->errorCode)->toBe($expectedCode);
-})->with([
-    'missing data shape' => [[], CashbackTransferErrorCode::ProviderInvalidResponse],
-    'reference mismatch' => [
-        paystackTransferDataForTest('success', ['reference' => 'cashback-01wrongreferencevalue']),
-        CashbackTransferErrorCode::ProviderInvalidResponse,
-    ],
-    'missing transfer identity' => [
-        paystackTransferDataForTest('pending', ['transfer_code' => null]),
-        CashbackTransferErrorCode::ProviderTransferIdentityMissing,
-    ],
-]);
-
-it('rejects malformed verification JSON without converting it to transfer absence', function (): void {
-    Http::fake(['*' => Http::response('{not-json', HttpResponse::HTTP_OK)]);
-
-    try {
-        app(PaystackCashbackTransferGateway::class)
-            ->verifyTransfer(paystackTransferRequestForTest()->providerReference);
-        test()->fail('Malformed verification must remain a provider failure.');
-    } catch (PaymentProviderException $exception) {
-        expect($exception->failure)->toBe(PaymentProviderFailure::MalformedResponse);
-    }
-});
-
-it('rejects a successful verification HTTP response with no boolean provider status', function (): void {
-    Http::fake(['*' => Http::response([
-        'message' => 'Transfer retrieved without a valid status',
-        'data' => paystackTransferDataForTest('success'),
-    ])]);
-
-    try {
-        app(PaystackCashbackTransferGateway::class)
-            ->verifyTransfer(paystackTransferRequestForTest()->providerReference);
-        test()->fail('A missing verification envelope status is malformed.');
-    } catch (PaymentProviderException $exception) {
-        expect($exception->failure)->toBe(PaymentProviderFailure::MalformedResponse);
-    }
-});
-
-it('verifies one stable reference and discards nested recipient details', function (): void {
-    $reference = paystackTransferRequestForTest()->providerReference;
-    Http::fake(['*' => Http::response([
-        'status' => true,
-        'message' => 'Transfer retrieved',
-        'data' => [
-            ...paystackTransferDataForTest('success'),
-            'recipient' => [
-                'recipient_code' => 'RCP_paystack_contract',
-                'details' => ['account_number' => '0000000000'],
-            ],
-        ],
-    ])]);
-
-    $verification = app(PaystackCashbackTransferGateway::class)->verifyTransfer($reference);
-
-    expect($verification->result?->status)->toBe(PayoutAttemptStatus::Succeeded)
-        ->and($verification->result?->transferCode)->toBe('TRF_paystack_contract')
-        ->and(json_encode($verification, JSON_THROW_ON_ERROR))->not->toContain('0000000000');
-    Http::assertSent(fn (Request $request): bool => $request->method() === 'GET'
-        && $request->url() === 'https://api.paystack.co/transfer/verify/'.$reference);
-    Http::assertSentCount(1);
-});
-
-it('returns an empty verification only for a strong transfer-not-found signature', function (array $body): void {
-    Http::fake(['*' => Http::response($body, HttpResponse::HTTP_NOT_FOUND)]);
-
-    $verification = app(PaystackCashbackTransferGateway::class)
-        ->verifyTransfer(paystackTransferRequestForTest()->providerReference);
-
-    expect($verification->result)->toBeNull();
-})->with([
-    'provider code' => [[
-        'status' => false,
-        'message' => 'An intentionally different message',
-        'code' => 'transfer_not_found',
-    ]],
-    'exact legacy message' => [[
-        'status' => false,
-        'message' => 'Transfer not found',
-    ]],
-]);
-
-it('never collapses an arbitrary verification failure or timeout into not found', function (
-    string $scenario,
-    PaymentProviderFailure $failure,
-): void {
-    if ($scenario === 'timeout') {
-        Http::fake(['*' => Http::failedConnection('cURL error 28: Operation timed out')]);
-    } else {
-        Http::fake(['*' => Http::response([
-            'status' => false,
-            'message' => 'Unknown reference condition',
-        ], HttpResponse::HTTP_NOT_FOUND)]);
-    }
-
-    try {
-        app(PaystackCashbackTransferGateway::class)
-            ->verifyTransfer(paystackTransferRequestForTest()->providerReference);
-        test()->fail('Verification failure must remain distinguishable from not found.');
-    } catch (PaymentProviderException $exception) {
-        expect($exception->failure)->toBe($failure);
-    }
-})->with([
-    'timeout' => ['timeout', PaymentProviderFailure::Timeout],
-    'arbitrary not-found response' => ['not-found', PaymentProviderFailure::Unavailable],
 ]);

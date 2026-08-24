@@ -28,7 +28,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property Currency $currency
  * @property CarbonImmutable $verified_at
  * @property-read User $user
- * @property-read Collection<int, PayoutAttempt> $payoutAttempts
+ * @property-read Collection<int, Payout> $payouts
  */
 #[Fillable([
     'user_id',
@@ -53,10 +53,10 @@ class PayoutAccount extends Model
         return $this->belongsTo(User::class);
     }
 
-    /** @return HasMany<PayoutAttempt, $this> */
-    public function payoutAttempts(): HasMany
+    /** @return HasMany<Payout, $this> */
+    public function payouts(): HasMany
     {
-        return $this->hasMany(PayoutAttempt::class);
+        return $this->hasMany(Payout::class);
     }
 
     /** @return array<string, string> */

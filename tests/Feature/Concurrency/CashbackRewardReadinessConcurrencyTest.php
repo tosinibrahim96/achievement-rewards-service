@@ -3,18 +3,18 @@
 declare(strict_types=1);
 
 use App\Actions\Badges\EvaluateBadges;
-use App\Actions\Cashback\ProcessCashbackPayment;
+use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Payouts\RegisterPayoutAccount;
 use App\Data\Payouts\RegisterPayoutAccountInput;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Events\BadgeUnlocked;
 use App\Events\PayoutAccountVerified;
 use App\Infrastructure\Payments\FakeTransferEffectRegistry;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
-use App\Models\PayoutAttempt;
 use App\Models\User;
 use App\Models\UserBadge;
 use Closure;
@@ -175,20 +175,20 @@ it('converges on one ready reward when either transaction holds the customer loc
             ->and(PayoutAccount::query()->whereBelongsTo($user)->count())->toBe(1)
             ->and($reward->status)->toBe(CashbackRewardStatus::ReadyForPayout)
             ->and($reward->provider)->toBeNull()
-            ->and(PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->count())
+            ->and(Payout::query()->where('cashback_reward_id', $reward->id)->count())
             ->toBe(0);
 
         $effects = app(FakeTransferEffectRegistry::class);
         $effects->forget($reward->provider_reference);
-        $firstAttempt = app(ProcessCashbackPayment::class)->handle($reward->id);
-        $duplicateAttempt = app(ProcessCashbackPayment::class)->handle($reward->id);
+        $firstPayout = app(ProcessCashbackPayout::class)->handle($reward->id);
+        $duplicatePayout = app(ProcessCashbackPayout::class)->handle($reward->id);
 
-        expect($firstAttempt?->status)->toBe(PayoutAttemptStatus::Succeeded)
-            ->and($duplicateAttempt)->toBeNull()
-            ->and(PayoutAttempt::query()->where('cashback_reward_id', $reward->id)->count())
+        expect($firstPayout?->status)->toBe(PayoutStatus::Succeeded)
+            ->and($duplicatePayout)->toBeNull()
+            ->and(Payout::query()->where('cashback_reward_id', $reward->id)->count())
             ->toBe(1)
             ->and($effects->findByReference($reward->provider_reference)?->status)
-            ->toBe(PayoutAttemptStatus::Succeeded);
+            ->toBe(PayoutStatus::Succeeded);
     } finally {
         if (isset($reward) && $reward instanceof CashbackReward) {
             app(FakeTransferEffectRegistry::class)->forget($reward->provider_reference);

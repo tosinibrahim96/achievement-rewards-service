@@ -10,11 +10,10 @@ use App\Enums\PaymentProvider;
 use Carbon\CarbonImmutable;
 use Database\Factories\CashbackRewardFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 /**
  * @property int $id
@@ -34,7 +33,7 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  * @property CarbonImmutable|null $balance_observed_at
  * @property-read User $user
  * @property-read UserBadge $userBadge
- * @property-read Collection<int, PayoutAttempt> $payoutAttempts
+ * @property-read Payout|null $payout
  */
 #[Fillable([
     'user_id',
@@ -69,10 +68,10 @@ class CashbackReward extends Model
         return $this->belongsTo(UserBadge::class);
     }
 
-    /** @return HasMany<PayoutAttempt, $this> */
-    public function payoutAttempts(): HasMany
+    /** @return HasOne<Payout, $this> */
+    public function payout(): HasOne
     {
-        return $this->hasMany(PayoutAttempt::class);
+        return $this->hasOne(Payout::class);
     }
 
     /** @return array<string, string> */

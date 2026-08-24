@@ -6,15 +6,15 @@ namespace App\Data\Cashback;
 
 use App\Enums\CashbackPayoutIssue;
 use App\Enums\CashbackRewardStatus;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 
 final readonly class CashbackPayoutSupportRequest
 {
     public function __construct(
         public int $cashbackRewardId,
-        public int $payoutAttemptId,
+        public int $payoutId,
         public CashbackPayoutIssue $issue,
-        public PayoutAttemptStatus $attemptStatus,
+        public PayoutStatus $payoutStatus,
         public CashbackRewardStatus $rewardStatus,
         public ?string $errorCode,
         public ?int $providerHttpStatus,

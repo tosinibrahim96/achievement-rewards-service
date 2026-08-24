@@ -7,12 +7,11 @@ namespace App\Infrastructure\Payments;
 use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\CashbackTransferVerification;
 use App\Data\Payments\TransferBalance;
 use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Exceptions\Payments\PaymentProviderException;
 use Illuminate\Container\Attributes\Config;
 
@@ -59,29 +58,22 @@ final readonly class FakeCashbackTransferGateway implements CashbackTransferGate
         }
 
         return match ($this->scenario) {
-            'success' => $this->effects->create($request, PayoutAttemptStatus::Succeeded),
-            'pending' => $this->effects->create($request, PayoutAttemptStatus::Pending),
+            'success' => $this->effects->create($request, PayoutStatus::Succeeded),
+            'pending' => $this->effects->create($request, PayoutStatus::Pending),
             'insufficient_funds' => new CashbackTransferResult(
-                status: PayoutAttemptStatus::InsufficientFunds,
+                status: PayoutStatus::InsufficientFunds,
                 errorCode: CashbackTransferErrorCode::InsufficientFunds,
                 errorMessage: 'The fake provider balance is insufficient.',
                 latencyMs: 0,
                 observedBalanceMinor: 0,
             ),
             'permanent_failure' => new CashbackTransferResult(
-                status: PayoutAttemptStatus::PermanentRejection,
+                status: PayoutStatus::PermanentRejection,
                 errorCode: CashbackTransferErrorCode::PermanentFailure,
                 errorMessage: 'The fake provider rejected the transfer.',
                 latencyMs: 0,
             ),
             default => throw PaymentProviderException::unavailable(),
         };
-    }
-
-    public function verifyTransfer(string $providerReference): CashbackTransferVerification
-    {
-        return new CashbackTransferVerification(
-            $this->effects->findByReference($providerReference),
-        );
     }
 }

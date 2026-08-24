@@ -7,7 +7,7 @@ use App\Enums\CashbackTransferErrorCode;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentProviderFailure;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Exceptions\Payments\PaymentProviderException;
 use App\Infrastructure\Payments\FakeCashbackTransferGateway;
 use App\Infrastructure\Payments\FakeTransferEffectRegistry;
@@ -45,13 +45,13 @@ it('atomically creates one non-expiring fake success effect with a deterministic
         ]);
 
         expect($gateway->provider())->toBe(PaymentProvider::Fake)
-            ->and($first->status)->toBe(PayoutAttemptStatus::Succeeded)
+            ->and($first->status)->toBe(PayoutStatus::Succeeded)
             ->and($first->transferCode)->toBe('TRF_FAKE_'.hash('sha256', $request->providerReference))
             ->and($first->latencyMs)->toBe(0)
             ->and($second->transferCode)->toBe($first->transferCode)
             ->and($ttl)->toBe(-1)
-            ->and($gateway->verifyTransfer($request->providerReference)->result?->status)
-            ->toBe(PayoutAttemptStatus::Succeeded);
+            ->and($effects->findForRequest($request)?->status)
+            ->toBe(PayoutStatus::Succeeded);
     } finally {
         $effects->forget($request->providerReference);
     }
@@ -119,25 +119,25 @@ it('rejects stored fake effects with a missing version, unknown version, invalid
     ]],
 ]);
 
-it('persists a pending provider-created effect and verifies the same lifecycle', function (): void {
+it('stores a pending transfer with its code in the fake effect registry', function (): void {
     [$effects, $request] = fakeTransferFixture();
     $gateway = new FakeCashbackTransferGateway($effects, 'pending');
 
     try {
         $result = $gateway->initiateTransfer($request);
 
-        expect($result->status)->toBe(PayoutAttemptStatus::Pending)
+        expect($result->status)->toBe(PayoutStatus::Pending)
             ->and($result->transferCode)->not->toBeNull()
-            ->and($gateway->verifyTransfer($request->providerReference)->result?->status)
-            ->toBe(PayoutAttemptStatus::Pending);
+            ->and($effects->findForRequest($request)?->status)
+            ->toBe(PayoutStatus::Pending);
     } finally {
         $effects->forget($request->providerReference);
     }
 });
 
-it('does not consume the stable reference for pre-creation fake outcomes', function (
+it('does not save the reference when the fake provider creates no transfer', function (
     string $scenario,
-    PayoutAttemptStatus $expectedStatus,
+    PayoutStatus $expectedStatus,
     ?int $expectedBalance,
     CashbackTransferErrorCode $expectedErrorCode,
 ): void {
@@ -151,7 +151,7 @@ it('does not consume the stable reference for pre-creation fake outcomes', funct
             ->and($result->transferCode)->toBeNull()
             ->and($result->errorCode)->toBe($expectedErrorCode)
             ->and($result->observedBalanceMinor)->toBe($expectedBalance)
-            ->and($gateway->verifyTransfer($request->providerReference)->result)->toBeNull()
+            ->and($effects->findForRequest($request))->toBeNull()
             ->and(Redis::connection('default')->command('exists', [
                 $effects->keyForReference($request->providerReference),
             ]))->toBe(0);
@@ -161,13 +161,13 @@ it('does not consume the stable reference for pre-creation fake outcomes', funct
 })->with([
     'insufficient funds' => [
         'insufficient_funds',
-        PayoutAttemptStatus::InsufficientFunds,
+        PayoutStatus::InsufficientFunds,
         0,
         CashbackTransferErrorCode::InsufficientFunds,
     ],
     'permanent rejection' => [
         'permanent_failure',
-        PayoutAttemptStatus::PermanentRejection,
+        PayoutStatus::PermanentRejection,
         null,
         CashbackTransferErrorCode::PermanentFailure,
     ],
@@ -180,7 +180,7 @@ it('treats an existing effect as authoritative over a later scenario change', fu
         $created = (new FakeCashbackTransferGateway($effects, 'success'))->initiateTransfer($request);
         $replayed = (new FakeCashbackTransferGateway($effects, 'permanent_failure'))->initiateTransfer($request);
 
-        expect($replayed->status)->toBe(PayoutAttemptStatus::Succeeded)
+        expect($replayed->status)->toBe(PayoutStatus::Succeeded)
             ->and($replayed->transferCode)->toBe($created->transferCode);
     } finally {
         $effects->forget($request->providerReference);
@@ -199,9 +199,9 @@ it('isolates the same stable reference between explicit fake-effect namespaces',
         expect($firstEffects->keyForReference($request->providerReference))
             ->not->toBe($secondEffects->keyForReference($request->providerReference))
             ->and($firstEffects->findByReference($request->providerReference)?->status)
-            ->toBe(PayoutAttemptStatus::Succeeded)
+            ->toBe(PayoutStatus::Succeeded)
             ->and($secondEffects->findByReference($request->providerReference)?->status)
-            ->toBe(PayoutAttemptStatus::Pending);
+            ->toBe(PayoutStatus::Pending);
     } finally {
         $firstEffects->forget($request->providerReference);
         $secondEffects->forget($request->providerReference);

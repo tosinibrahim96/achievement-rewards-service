@@ -7,9 +7,9 @@ namespace App\Actions\Cashback;
 use App\Data\Cashback\CashbackPayoutSupportRequest;
 use App\Enums\CashbackPayoutIssue;
 use App\Enums\CashbackRewardStatus;
-use App\Enums\PayoutAttemptStatus;
+use App\Enums\PayoutStatus;
 use App\Models\CashbackReward;
-use App\Models\PayoutAttempt;
+use App\Models\Payout;
 use App\Notifications\CashbackPayoutRequiresAttention;
 use Illuminate\Container\Attributes\Config;
 use Illuminate\Support\Facades\Context;
@@ -29,16 +29,16 @@ final readonly class RequestCashbackPayoutSupport
 
     public function markWhileLocked(
         #[SensitiveParameter] CashbackReward $reward,
-        #[SensitiveParameter] PayoutAttempt $attempt,
+        #[SensitiveParameter] Payout $payout,
     ): ?CashbackPayoutSupportRequest {
         if (DB::connection()->transactionLevel() === 0) {
             throw new LogicException('A support request must be marked inside the payout transaction.');
         }
 
-        $issue = $this->issueFor($attempt->status);
+        $issue = $this->issueFor($payout->status);
 
-        if ($attempt->cashback_reward_id !== $reward->id
-            || $attempt->support_alert_requested_at !== null
+        if ($payout->cashback_reward_id !== $reward->id
+            || $payout->support_alert_requested_at !== null
             || $issue === null
             || ! in_array($reward->status, [
                 CashbackRewardStatus::AwaitingFunds,
@@ -48,16 +48,16 @@ final readonly class RequestCashbackPayoutSupport
             return null;
         }
 
-        $attempt->support_alert_requested_at = now()->toImmutable();
+        $payout->support_alert_requested_at = now()->toImmutable();
 
         return new CashbackPayoutSupportRequest(
             cashbackRewardId: $reward->id,
-            payoutAttemptId: $attempt->id,
+            payoutId: $payout->id,
             issue: $issue,
-            attemptStatus: $attempt->status,
+            payoutStatus: $payout->status,
             rewardStatus: $reward->status,
-            errorCode: $attempt->provider_error_code,
-            providerHttpStatus: $attempt->provider_http_status,
+            errorCode: $payout->provider_error_code,
+            providerHttpStatus: $payout->provider_http_status,
             correlationId: $reward->correlation_id,
         );
     }
@@ -68,9 +68,9 @@ final readonly class RequestCashbackPayoutSupport
             try {
                 Log::warning('cashback.payout.support_requested', [
                     'cashback_reward_id' => $request->cashbackRewardId,
-                    'payout_attempt_id' => $request->payoutAttemptId,
+                    'payout_id' => $request->payoutId,
                     'issue_category' => $request->issue->value,
-                    'attempt_status' => $request->attemptStatus->value,
+                    'payout_status' => $request->payoutStatus->value,
                     'reward_status' => $request->rewardStatus->value,
                     'error_code' => $request->errorCode,
                     'provider_http_status' => $request->providerHttpStatus,
@@ -89,19 +89,19 @@ final readonly class RequestCashbackPayoutSupport
         }, ['correlation_id' => $request->correlationId]);
     }
 
-    private function issueFor(PayoutAttemptStatus $status): ?CashbackPayoutIssue
+    private function issueFor(PayoutStatus $status): ?CashbackPayoutIssue
     {
         return match ($status) {
-            PayoutAttemptStatus::InsufficientFunds => CashbackPayoutIssue::FundingRequired,
-            PayoutAttemptStatus::Ambiguous => CashbackPayoutIssue::StatusUncertain,
-            PayoutAttemptStatus::RetryableRejection => CashbackPayoutIssue::TemporaryRejection,
-            PayoutAttemptStatus::PermanentRejection,
-            PayoutAttemptStatus::OtpRequired,
-            PayoutAttemptStatus::Failed,
-            PayoutAttemptStatus::Reversed => CashbackPayoutIssue::HumanReview,
-            PayoutAttemptStatus::Started,
-            PayoutAttemptStatus::Pending,
-            PayoutAttemptStatus::Succeeded => null,
+            PayoutStatus::InsufficientFunds => CashbackPayoutIssue::FundingRequired,
+            PayoutStatus::Ambiguous => CashbackPayoutIssue::StatusUncertain,
+            PayoutStatus::RetryableRejection => CashbackPayoutIssue::TemporaryRejection,
+            PayoutStatus::PermanentRejection,
+            PayoutStatus::OtpRequired,
+            PayoutStatus::Failed,
+            PayoutStatus::Reversed => CashbackPayoutIssue::HumanReview,
+            PayoutStatus::Started,
+            PayoutStatus::Pending,
+            PayoutStatus::Succeeded => null,
         };
     }
 

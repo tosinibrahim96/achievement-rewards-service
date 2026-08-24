@@ -13,8 +13,8 @@ use App\Exceptions\Payments\PaymentProviderException;
 use App\Exceptions\Payouts\PayoutAccountConflictException;
 use App\Infrastructure\Payments\FakeTransferRecipientGateway;
 use App\Models\CashbackReward;
+use App\Models\Payout;
 use App\Models\PayoutAccount;
-use App\Models\PayoutAttempt;
 use App\Models\User;
 use App\Models\UserBadge;
 use Illuminate\Auth\Access\AuthorizationException;
@@ -115,9 +115,9 @@ it('changes only clean waiting rewards when an account is replaced', function ()
     $providerBoundWaiting = payoutAccountRewardForTest($user, [
         'provider' => PaymentProvider::Fake,
     ]);
-    $attemptedWaiting = payoutAccountRewardForTest($user);
-    PayoutAttempt::factory()->create([
-        'cashback_reward_id' => $attemptedWaiting->id,
+    $waitingWithPayout = payoutAccountRewardForTest($user);
+    Payout::factory()->create([
+        'cashback_reward_id' => $waitingWithPayout->id,
         'payout_account_id' => $account->id,
     ]);
     $unchangedStatuses = [
@@ -143,7 +143,7 @@ it('changes only clean waiting rewards when an account is replaced', function ()
 
     expect($cleanWaiting->refresh()->status)->toBe(CashbackRewardStatus::ReadyForPayout)
         ->and($providerBoundWaiting->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
-        ->and($attemptedWaiting->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
+        ->and($waitingWithPayout->refresh()->status)->toBe(CashbackRewardStatus::AwaitingPayoutAccount)
         ->and($unchanged->map(
             static fn (CashbackReward $reward): CashbackRewardStatus => $reward->refresh()->status,
         )->all())->toBe($unchangedStatuses);
