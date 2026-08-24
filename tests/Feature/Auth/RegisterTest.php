@@ -89,4 +89,5 @@ it('validates registration input', function (array $overrides, string $invalidFi
         'password',
     ],
     'password must be confirmed' => [['password_confirmation' => 'different-password'], 'password'],
+    'account type must be absent even when null' => [['account_type' => null], 'account_type'],
 ]);

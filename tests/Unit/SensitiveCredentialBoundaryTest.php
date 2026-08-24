@@ -2,13 +2,15 @@
 
 declare(strict_types=1);
 
+use App\Actions\Auth\AuthenticateUser;
 use App\Actions\Auth\LoginCustomer;
+use App\Actions\Auth\LoginSystem;
 use App\Actions\Auth\RegisterCustomer;
 use App\Actions\Cashback\HandlePaystackWebhook;
 use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
 use App\Actions\Payouts\RegisterPayoutAccount;
-use App\Data\Auth\LoginCustomerInput;
+use App\Data\Auth\LoginInput;
 use App\Data\Auth\RegisterCustomerInput;
 use App\Data\Payouts\RegisterPayoutAccountInput;
 use App\Infrastructure\Payments\PaystackCashbackTransferGateway;
@@ -21,7 +23,9 @@ it('marks credential-bearing Action inputs as sensitive', function (string $acti
 
     expect($parameter->getAttributes(SensitiveParameter::class))->toHaveCount(1);
 })->with([
+    AuthenticateUser::class,
     LoginCustomer::class,
+    LoginSystem::class,
     RegisterCustomer::class,
 ]);
 
@@ -36,7 +40,7 @@ it('marks password constructor parameters as sensitive', function (string $input
     expect($password)->toBeInstanceOf(ReflectionParameter::class)
         ->and($password->getAttributes(SensitiveParameter::class))->toHaveCount(1);
 })->with([
-    LoginCustomerInput::class,
+    LoginInput::class,
     RegisterCustomerInput::class,
 ]);
 

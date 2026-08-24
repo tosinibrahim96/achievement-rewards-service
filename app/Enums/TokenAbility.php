@@ -22,4 +22,12 @@ enum TokenAbility: string
             self::CashbackRewardsRead->value,
         ];
     }
+
+    /**
+     * @return list<string>
+     */
+    public static function systemValues(): array
+    {
+        return [self::PurchasesWrite->value];
+    }
 }

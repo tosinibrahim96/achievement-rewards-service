@@ -13,3 +13,9 @@ it('keeps customer abilities least privileged', function (): void {
         ])
         ->not->toContain(TokenAbility::PurchasesWrite->value);
 });
+
+it('gives system login only the purchase ingestion ability', function (): void {
+    expect(TokenAbility::systemValues())->toBe([
+        TokenAbility::PurchasesWrite->value,
+    ]);
+});

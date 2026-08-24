@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace App\Http\Requests\Auth;
 
-use App\Data\Auth\LoginCustomerInput;
+use App\Data\Auth\LoginInput;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Support\Str;
 
@@ -27,12 +27,12 @@ final class LoginRequest extends FormRequest
         ];
     }
 
-    public function toInput(): LoginCustomerInput
+    public function toInput(): LoginInput
     {
         $validated = $this->safe();
         $deviceName = $validated->string('device_name')->trim()->toString();
 
-        return new LoginCustomerInput(
+        return new LoginInput(
             email: $validated->string('email')->toString(),
             password: $validated->string('password')->toString(),
             deviceName: $deviceName === '' ? 'api' : $deviceName,

@@ -22,7 +22,10 @@
         "nunomaduro/collision": "^8.6",
         "pestphp/pest": "^5.1",
         "pestphp/pest-plugin-laravel": "^5.0",
-        "phpunit/phpunit": "^13.3"
+        "php-openapi/openapi": "^2.1",
+        "phpunit/phpunit": "^13.3",
+        "scalar/laravel": "^0.2.1",
+        "symfony/yaml": "^8.1"
     },
     "autoload": {
         "psr-4": {
@@ -42,11 +45,13 @@
         "lint:fix": "pint",
         "quality": [
             "composer validate --strict --no-check-publish",
+            "@openapi:validate",
             "@lint",
             "@analyse",
             "composer audit --locked --no-interaction",
             "@test:coverage"
         ],
+        "openapi:validate": "php-openapi validate --silent openapi.yaml",
         "test": [
             "@php artisan config:clear --ansi @no_additional_args",
             "@php artisan test"

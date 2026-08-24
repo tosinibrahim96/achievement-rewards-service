@@ -101,6 +101,19 @@ it('requires achievements read access', function (): void {
         ->assertJsonPath('code', 'forbidden');
 });
 
+it('accepts an existing first-party customer session on the web-group route', function (): void {
+    $customer = User::factory()->create();
+    $this->seed([
+        AchievementCatalogueSeeder::class,
+        BadgeCatalogueSeeder::class,
+    ]);
+
+    $this->actingAs($customer, 'web')
+        ->getJson("/users/{$customer->id}/achievements")
+        ->assertOk()
+        ->assertJsonPath('unlocked_achievements', []);
+});
+
 it('requires a customer account', function (): void {
     $system = User::factory()->system()->create();
 

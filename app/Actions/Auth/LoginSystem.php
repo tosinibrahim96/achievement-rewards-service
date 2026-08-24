@@ -10,18 +10,18 @@ use App\Enums\AccountType;
 use App\Exceptions\Auth\InvalidCredentialsException;
 use SensitiveParameter;
 
-final readonly class LoginCustomer
+final readonly class LoginSystem
 {
     public function __construct(
         private AuthenticateUser $authenticateUser,
-        private IssueCustomerToken $issueCustomerToken,
+        private IssueSystemToken $issueSystemToken,
     ) {}
 
     /** @throws InvalidCredentialsException */
     public function handle(#[SensitiveParameter] LoginInput $input): AuthenticationResult
     {
-        $user = $this->authenticateUser->handle($input, AccountType::Customer);
+        $user = $this->authenticateUser->handle($input, AccountType::System);
 
-        return $this->issueCustomerToken->handle($user, $input->deviceName);
+        return $this->issueSystemToken->handle($user, $input->deviceName);
     }
 }

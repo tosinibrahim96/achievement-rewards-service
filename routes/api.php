@@ -17,6 +17,9 @@ Route::prefix('auth')->name('auth.')->group(function (): void {
     Route::post('/login', [AuthController::class, 'login'])
         ->middleware('throttle:login')
         ->name('login');
+    Route::post('/system/login', [AuthController::class, 'loginSystem'])
+        ->middleware('throttle:login')
+        ->name('system.login');
 });
 
 Route::post('/webhooks/paystack', PaystackWebhookController::class)

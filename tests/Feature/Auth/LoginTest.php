@@ -6,8 +6,17 @@ use App\Enums\TokenAbility;
 use App\Http\Middleware\AssignRequestId;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Sleep;
 
 uses(RefreshDatabase::class);
+
+beforeEach(function (): void {
+    Sleep::fake();
+});
+
+afterEach(function (): void {
+    Sleep::fake(false);
+});
 
 it('authenticates a customer and names the least-privilege token', function (): void {
     $user = User::factory()->create([
@@ -32,6 +41,7 @@ it('authenticates a customer and names the least-privilege token', function (): 
     expect($response->json('token'))->toBeString()
         ->and($user->tokens()->sole()->name)->toBe('Ibrahim MacBook')
         ->and($user->tokens()->sole()->abilities)->toBe(TokenAbility::customerValues());
+    Sleep::assertNeverSlept();
 });
 
 it('returns the same error for an unknown email and an incorrect password', function (array $credentials): void {
@@ -47,6 +57,8 @@ it('returns the same error for an unknown email and an incorrect password', func
             'code' => 'invalid_credentials',
             'message' => 'The provided credentials are incorrect.',
         ]);
+
+    Sleep::assertSleptTimes(1);
 })->with([
     'unknown email' => [[
         'email' => 'unknown@example.com',
@@ -76,6 +88,7 @@ it('does not authenticate a system identity through the public customer login', 
         ]);
 
     expect($system->tokens()->exists())->toBeFalse();
+    Sleep::assertSleptTimes(1);
 });
 
 it('rate limits repeated login attempts by normalized email and ip address', function (): void {
@@ -106,6 +119,7 @@ it('rate limits repeated login attempts by normalized email and ip address', fun
 
     expect($response->headers->get('Retry-After'))->not->toBeNull()
         ->and($response->headers->get(AssignRequestId::HEADER))->toBeString();
+    Sleep::assertSleptTimes(5);
 });
 
 it('validates login input before attempting authentication', function (): void {
@@ -115,4 +129,5 @@ it('validates login input before attempting authentication', function (): void {
     ])
         ->assertUnprocessable()
         ->assertJsonValidationErrors(['email', 'password']);
+    Sleep::assertNeverSlept();
 });

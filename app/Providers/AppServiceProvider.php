@@ -17,6 +17,7 @@ use App\Models\User;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
+use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Str;
@@ -44,6 +45,11 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         JsonResource::withoutWrapping();
+
+        Gate::define(
+            'viewScalar',
+            static fn (?User $user = null): bool => app()->environment(['local', 'testing']),
+        );
 
         RateLimiter::for('login', static function (Request $request): Limit {
             $email = $request->input('email');

@@ -1,638 +1,958 @@
 # Achievement Rewards Service
 
-A Laravel service for ecommerce achievements, badges, and cashback rewards.
+[![Quality](https://github.com/tosinibrahim96/achievement-rewards-service/actions/workflows/quality.yml/badge.svg)](https://github.com/tosinibrahim96/achievement-rewards-service/actions/workflows/quality.yml)
+![Coverage gate: at least 90%](https://img.shields.io/badge/coverage%20gate-%E2%89%A590%25-brightgreen)
 
-The project currently includes its Docker-based infrastructure foundation, Sanctum authentication, trusted completed-purchase ingestion, purchase-driven achievement unlocking, exact achievement/badge events, badge progression, customer achievement visibility, durable cashback rewards, verified/masked payout-account onboarding, deterministic fake-backed payout execution, a Paystack test-mode adapter, signed Paystack transfer callbacks, first-transition support escalation, and customer cashback visibility. Automatic payout retry/reconciliation remains deferred beyond this assessment.
+A Laravel service that turns completed purchases into achievements, badges, and durable NGN cashback rewards. It includes a real Paystack test-mode adapter, but the complete reviewer journey uses the deterministic Fake provider: no Paystack account, SMTP server, external mailbox, or live money is required.
 
-## Prerequisite
+The core story is:
 
-Install Docker Desktop, Docker Engine with the Compose plugin, or an equivalent Docker-compatible runtime. PHP, Composer, Node.js, PostgreSQL, and Redis are not required on the host.
-
-Verify the prerequisite:
-
-```bash
-docker --version
-docker compose version
+```text
+trusted system records a purchase
+  -> Horizon evaluates achievements
+  -> Horizon evaluates badges
+  -> a badge creates an NGN 300 cashback reward
+  -> the reward waits for a payout account or queues a payout
+  -> Fake or Paystack records one durable payout row and state
 ```
 
-## First-time setup
+## Table of contents
 
-Build the development image, install PHP dependencies, create the local environment file, generate the application key, and migrate PostgreSQL:
+- [Start from a clean clone](#start-from-a-clean-clone)
+- [Run the guided demo in Scalar](#run-the-guided-demo-in-scalar)
+- [Try another seeded scenario](#try-another-seeded-scenario)
+- [Configure Fake payments and logged mail](#configure-fake-payments-and-logged-mail)
+- [Review the API contract and authorization](#review-the-api-contract-and-authorization)
+- [Run tests and quality checks](#run-tests-and-quality-checks)
+- [Add an achievement and a badge](#add-an-achievement-and-a-badge)
+- [Understand the design and limits](#understand-the-design-and-limits)
+- [Troubleshoot, inspect, or reset](#troubleshoot-inspect-or-reset)
+
+## Start from a clean clone
+
+### 1. Check the prerequisites
+
+You need Git, Docker with the Compose plugin, and a browser that can reach jsDelivr to load Scalar's pinned JavaScript bundle. On Windows, use a WSL shell with Docker Desktop integration for these copy-paste commands. You do not need host PHP, Composer, PostgreSQL, or Redis.
 
 ```bash
+git --version
+docker --version
+docker compose version
+docker info
+```
+
+If `docker info` cannot reach the daemon, start Docker Desktop or the Docker service before continuing.
+
+### 2. Clone and build
+
+```bash
+git clone https://github.com/tosinibrahim96/achievement-rewards-service.git
+cd achievement-rewards-service
 docker compose build
+```
+
+Run every later Docker Compose command from this repository directory. If a new terminal opens in `~` or another directory, `cd` back here first; otherwise Compose cannot find `compose.yaml`.
+
+### 3. Install, configure, migrate, and seed
+
+```bash
 docker compose --profile tools run --rm setup
 docker compose up -d
 ```
 
-The application is then available at <http://localhost:8000>. A successful response looks like:
+The setup container:
 
-```json
-{
-  "name": "Achievement Rewards Service",
-  "status": "ok"
-}
+- copies `.env.example` to an uncommitted `.env` when needed;
+- records your host user and group IDs for writable bind-mounted files;
+- installs the exact dependencies from `composer.lock`;
+- generates `APP_KEY` when it is empty;
+- clears stale Laravel caches; and
+- runs outstanding migrations and the idempotent seeders.
+
+The default environment is already the safe reviewer configuration:
+
+```dotenv
+APP_ENV=local
+QUEUE_CONNECTION=redis
+PAYMENT_DRIVER=fake
+FAKE_PAYOUT_ACCOUNT_SCENARIO=success
+FAKE_TRANSFER_SCENARIO=success
+MAIL_MAILER=log
+CASHBACK_SUPPORT_EMAIL=support@example.test
 ```
 
-## Customer authentication
+Do not add a Paystack key or mail credential for the guided demo.
 
-Laravel Sanctum issues bearer tokens for the JSON API. The public auth routes create and authenticate customer accounts only:
+### 4. Confirm the stack
 
-| Method | Route | Purpose |
+```bash
+docker compose ps
+```
+
+The application, Nginx, PostgreSQL, Redis, Horizon, and scheduler should be running. The first two requests in the Scalar journey confirm the public service and health responses.
+
+## Run the guided demo in Scalar
+
+Scalar is both the interactive API client and the rendered reference for this repository's single [OpenAPI 3.1 contract](openapi.yaml). Open <http://localhost:8000/docs>; every request below is sent to the running application and its formatted status, headers, and JSON response stay visible beside the operation.
+
+The documented setup uses Laravel's `local` environment, where Scalar is enabled. Its interface loads the exact pinned browser bundle from jsDelivr, so the browser needs internet access when opening the page. The application, OpenAPI contract, and automated checks run locally and do not depend on that CDN.
+
+This journey starts with a customer who has no purchases and no payout account. One purchase earns `First Purchase`, the Beginner badge, an NGN 300 reward, and a logged customer notification. Adding a Fake payout account then pays that same reward.
+
+Setup seeds nine customers and exactly one system identity, `demo.purchase-system@example.test`. All demo identities use the local/testing-only password `password`. No bearer token is seeded: both identities must prove their credentials through the documented login endpoints.
+
+### 1. Open two independent Scalar tabs
+
+Open <http://localhost:8000/docs> in two fresh browser tabs and keep both open. Avoid the browser's **Duplicate Tab** command because browsers differ in what page state they clone; opening the URL twice removes that ambiguity.
+
+| Tab | Identity | Purpose |
 | --- | --- | --- |
-| `POST` | `/api/auth/register` | Register a customer and issue a token |
-| `POST` | `/api/auth/login` | Authenticate a customer and issue a token |
-| `POST` | `/api/auth/logout` | Revoke the bearer token used for the request |
-| `GET` | `/api/me` | Return the authenticated user |
+| **SYSTEM** | `demo.purchase-system@example.test` | Authenticate with `purchases:write` and record purchases |
+| **CUSTOMER** | `demo.fresh@example.test` | Read progress and rewards, then save a payout account |
 
-Register a customer:
+Scalar is deliberately configured with `persistAuth: false`. Each Scalar page keeps its bearer token only in that tab's in-memory store, so the customer and system tokens remain separate. Reloading clears only Scalar's local copy; it does not revoke the server-side Sanctum token. Keep both tabs open through the logout step.
+
+For each named operation, open it, choose **Test Request**, enter the values shown here, and send the request. Start with **Show the service identity** and **Check application health** in either tab. Expect `200` with `status: ok` and `status: up`, respectively.
+
+To see the asynchronous workflow and logged email beside the browser journey, optionally keep this command running in a terminal:
 
 ```bash
-curl --request POST http://localhost:8000/api/auth/register \
-  --header 'Accept: application/json' \
-  --header 'Content-Type: application/json' \
-  --data '{
-    "name": "Example Customer",
-    "email": "customer@example.com",
-    "password": "secure-password",
-    "password_confirmation": "secure-password",
-    "device_name": "local-demo"
-  }'
+docker compose exec app php artisan pail -vv
 ```
 
-Registration returns `201 Created`; login returns `200 OK`. Both use the same root-level response contract (ordinary API Resources do not add a `data` wrapper):
+Stop it later with `Ctrl+C`. Because `MAIL_MAILER=log`, Laravel writes the rendered recipient, subject, and message here; nothing is sent to an inbox.
+
+### 2. Authorize the SYSTEM tab
+
+In the SYSTEM tab, run **Log in a system identity** with:
 
 ```json
 {
-  "user": {
-    "id": 1,
-    "name": "Example Customer",
-    "email": "customer@example.com",
-    "account_type": "customer"
-  },
-  "token": "1|ars_...",
-  "token_type": "Bearer",
-  "abilities": [
-    "achievements:read",
-    "payout-accounts:write",
-    "cashback-rewards:read"
-  ]
+  "email": "demo.purchase-system@example.test",
+  "password": "password",
+  "device_name": "Scalar system demo"
 }
 ```
 
-Send the `token` value only in the `Authorization` header. It is shown once and the database stores only its SHA-256 hash:
+Expect `200`. The response identifies a `system` account and contains exactly one ability, `purchases:write`. Copy the generated `token`, open Scalar's authentication panel, select `bearerAuth`, and paste only the token value. Scalar adds the `Bearer` scheme.
 
-```bash
-curl http://localhost:8000/api/me \
-  --header 'Accept: application/json' \
-  --header 'Authorization: Bearer <token>'
-```
+Customer login cannot authenticate this identity. The system-login request cannot select an account type or request more abilities.
 
-Customer tokens receive only these abilities:
+### 3. Authorize the CUSTOMER tab
 
-- `achievements:read`
-- `payout-accounts:write`
-- `cashback-rewards:read`
-
-The reserved `purchases:write` ability is never issued by public registration or login. It belongs to trusted system identities provisioned administratively; a repeatable internal demo/setup workflow is a later milestone.
-
-The Sanctum guard is explicitly restricted to the `users` provider. This still accepts both customer and system `User` identities while preventing an unrelated tokenable model from becoming valid accidentally. Logout is bearer-only: it revokes only the persisted personal access token used for the request, returns an empty `204 No Content`, and leaves other tokens valid. For logout, missing, revoked, or session/transient authentication receives `401`.
-
-The auth delivery flow is deliberately narrow:
-
-```text
-FormRequest -> immutable input DTO -> one top-level Action -> typed result -> API Resource
-```
-
-Controllers only receive, delegate, and respond. The register/login Actions coordinate token issuance; `/api/me` wraps the authenticated `User` directly because it has no application work to perform.
-
-API failures use one compact `application/json` contract. The HTTP status is carried only by the response status line; the body contains a stable machine-readable `code`, a human-readable `message`, and optional validation `errors`. Protocol headers such as `WWW-Authenticate`, `Allow`, and `Retry-After` are preserved.
-
-Each request receives a server-generated request ID in Laravel Context and the `X-Request-ID` response header, but diagnostic identifiers are not repeated in the JSON body. Workflow correlation IDs are durable database metadata on the purchase-to-reward flow and are copied into selected milestone-log context; Laravel does not infer a database correlation ID for every log statement. Clients receive domain identifiers such as purchase references instead.
+In the CUSTOMER tab, run **Log in a customer** with:
 
 ```json
 {
-  "code": "validation_failed",
-  "message": "One or more fields are invalid.",
-  "errors": {
-    "email": ["The email field must be a valid email address."]
-  }
+  "email": "demo.fresh@example.test",
+  "password": "password",
+  "device_name": "Scalar customer demo"
 }
 ```
 
-Malformed or missing login fields return `422 validation_failed` with field-level `errors`. A syntactically valid login with an unknown email, wrong password, or system identity returns the same `401 invalid_credentials` body without an `errors` object, so clients are not told that the email field itself is invalid and account existence is not disclosed. `WWW-Authenticate: Bearer` is reserved for protected endpoints that actually require an existing bearer token.
+Expect `200`. Copy the returned `user.id` for later path and request fields; do not assume that a displayed example ID matches your database. The token contains exactly:
 
-The setup command is safe to rerun. It installs the locked dependencies and applies only outstanding migrations.
+- `achievements:read`;
+- `payout-accounts:write`; and
+- `cashback-rewards:read`.
 
-## Payout account onboarding
+Copy the generated `token` into this tab's `bearerAuth` field, again without typing `Bearer` yourself.
 
-An authenticated customer can create or replace their own transfer destination:
+### 4. Prove that the tabs use different identities
 
-```text
-PUT /api/me/payout-account
-```
+Run **Show the authenticated identity** in both tabs:
 
-The route requires a valid Sanctum bearer token with `payout-accounts:write`. It also requires a `customer` identity and applies the payout-account ownership policy; a `system` identity is rejected even if its token contains that ability. The route never accepts a customer ID, so one customer cannot select another customer's destination. Provider-backed updates are limited to five attempts per minute for each authenticated customer.
+- CUSTOMER must return `demo.fresh@example.test` with `account_type: customer`.
+- SYSTEM must return `demo.purchase-system@example.test` with `account_type: system`.
 
-The request accepts exactly two string fields. Keeping the account number as a string preserves leading zeros:
+This quick check prevents a purchase attempt with the customer token or an owner-scoped read with the system token.
 
-```bash
-curl --request PUT http://localhost:8000/api/me/payout-account \
-  --header 'Accept: application/json' \
-  --header 'Content-Type: application/json' \
-  --header 'Authorization: Bearer <customer-token>' \
-  --data '{
-    "account_number": "0000000000",
-    "bank_code": "057"
-  }'
-```
+### 5. Read the customer's starting state
 
-The first verified destination returns `201 Created`; a successful replacement updates the same current row and returns `200 OK`. Both statuses use the same root-level response:
+In the CUSTOMER tab, run **Show a customer's achievement and badge progress**. Set the `user` path field to the customer ID returned by login. The response contains all five assessment fields:
 
 ```json
 {
-  "id": 42,
+  "unlocked_achievements": [],
+  "next_available_achievements": [
+    "First Purchase",
+    "NGN 5,000 Spent"
+  ],
+  "current_badge": null,
+  "next_badge": "Beginner",
+  "remaining_to_unlock_next_badge": 1
+}
+```
+
+Then run **List the current customer's cashback rewards**. Its `data` array is empty and `meta.total` is `0`.
+
+### 6. Record the purchase and prove replay safety
+
+In the SYSTEM tab, run **Record a completed purchase**. Replace `user_id` with the ID returned by customer login:
+
+```json
+{
+  "user_id": 1,
+  "external_reference": "README-FRESH-FIRST-001",
+  "amount_minor": 100000,
+  "currency": "NGN",
+  "completed_at": "2026-08-24T18:00:00Z"
+}
+```
+
+`amount_minor` is kobo, so `100000` means NGN 1,000. On a fresh demo database, the first response is `201` with `was_duplicate: false`.
+
+Send the identical request once more. It returns `200`, the same purchase ID, and `was_duplicate: true`; it does not dispatch the purchase event again. Reusing the reference with different purchase facts returns `409 Conflict`.
+
+### 7. Observe the achievement, badge, reward, and notification
+
+Give Horizon a few seconds, then return to the CUSTOMER tab and send the two reads from step 5 again. The progress response becomes:
+
+```json
+{
+  "unlocked_achievements": ["First Purchase"],
+  "next_available_achievements": [
+    "3 Purchases",
+    "NGN 5,000 Spent"
+  ],
+  "current_badge": "Beginner",
+  "next_badge": "Intermediate",
+  "remaining_to_unlock_next_badge": 3
+}
+```
+
+The rewards response contains one item with these stable facts; IDs and timestamps are generated:
+
+```json
+{
+  "badge_name": "Beginner",
+  "amount_minor": 30000,
+  "currency": "NGN",
+  "status": "awaiting_payout_account",
+  "paid_at": null
+}
+```
+
+In Pail, expect recipient `demo.fresh@example.test` and subject `Add a payout account for your cashback reward`. This proves Laravel rendered the customer notification locally; it does not prove SMTP or inbox delivery.
+
+If the GET responses have not changed, wait another moment and send those GET requests again. Do not create a new purchase reference as a polling mechanism.
+
+### 8. Add a Fake payout destination
+
+In the CUSTOMER tab, run **Create or replace the current customer's payout account** with:
+
+```json
+{
+  "account_number": "0000001234",
+  "bank_code": "057"
+}
+```
+
+These are deterministic Fake-provider inputs, not a real customer's bank details. The Fake provider validates their shape without contacting a bank.
+
+The first save returns `201` and never returns the full account number. Its numeric ID and timestamp are generated; the stable response facts are:
+
+```json
+{
+  "id": 3,
   "provider": "fake",
   "account_name": "Demo Customer",
   "bank_name": "Demo Bank",
   "bank_code": "057",
-  "masked_account_number": "******0000",
+  "masked_account_number": "******1234",
   "currency": "NGN",
-  "verified_at": "2026-08-22T18:30:00.000000Z"
+  "verified_at": "<generated UTC timestamp>"
 }
 ```
 
-`account_name` is canonical provider output, not accepted customer input. The service uses the full account number only while creating the provider recipient, then discards it. The database stores the provider recipient code and last four digits; the API never returns the full number, raw last-four source field, user ID, recipient code, provider payload, or diagnostics.
+Give Horizon a few seconds, then send **List the current customer's cashback rewards** again. The same reward now has `status: paid` and a non-null `paid_at`. This is the customer-facing application result: the service marked its NGN 300 obligation fulfilled after the selected provider returned success.
 
-Replacement is fail-safe. A bounded per-customer Redis lock serializes ordinary competing requests. The new provider recipient is created before a short PostgreSQL transaction locks the customer and replaces the current row. Provider rejection or local rollback leaves the previous verified destination unchanged, while database uniqueness remains the durable one-account rule. `PayoutAccountVerified` is dispatched only after a successful commit and carries only the persisted payout-account model.
+The Fake provider never moves money, so this does **not** prove that a bank account received NGN 300. There is intentionally no “cashback paid” email in this assessment. An email would communicate the same application state; it would not be independent proof of bank credit.
 
-The default and CI-safe adapter is selected with:
+### 9. Revoke both generated tokens
 
-```dotenv
-PAYMENT_DRIVER=fake
-FAKE_PAYOUT_ACCOUNT_SCENARIO=success
-FAKE_TRANSFER_SCENARIO=success
-```
+In the CUSTOMER tab, run **Revoke the current bearer token** and expect `204` with no body. Repeat the same operation in the SYSTEM tab and expect another `204`. Each request revokes only the token used for that request.
 
-Supported payout-account fake scenarios are `success` and `rejected`. The fake derives a deterministic internal recipient identity without storing the full account number. Both fake and Paystack adapters remain registered. `PAYMENT_DRIVER` selects only the adapter used for a new or replacement payout-account operation; changing the default never reinterprets an existing account or claimed reward. A failed Paystack operation leaves the existing verified destination unchanged and never falls back to fake.
+For an optional visible proof, send **Show the authenticated identity** once more in each tab while the revoked token remains selected; each response is `401`. Then clear any temporary token and customer-ID notes.
 
-Expected recipient rejection returns sanitized `422 payout_account_rejected`. A recipient identity already owned by another customer returns sanitized `409 payout_account_conflict`, and lock contention returns `409 payout_account_busy`. Provider unavailability, malformed responses, and timeouts map centrally to sanitized `503 payment_provider_unavailable`, `502 payment_provider_invalid_response`, and `504 payment_provider_timeout`. Exceeding the per-customer limit returns the standard `429 rate_limit_exceeded` response. Provider text, account details, secrets, and raw payloads are not copied into these responses.
+## Try another seeded scenario
 
-### Paystack test-mode adapter
+To demonstrate a specific boundary, open two fresh Scalar tabs and repeat both login/authorization steps: the seeded purchase system in the SYSTEM tab and one unused customer from this table in the CUSTOMER tab. Then run the two starting reads, system purchase ingestion, and the two reads after Horizon catches up. Each row assumes a fresh seed and the default Fake success configuration.
 
-The real adapter is deliberately restricted to Paystack test mode. Keep the fake as the default for local demonstrations and automated tests. To select Paystack for a manual sandbox operation, set these only in the local, Git-ignored `.env` file:
+| Customer email | Exact starting fact | `external_reference` | `amount_minor` | Expected result after one purchase |
+| --- | --- | --- | ---: | --- |
+| `demo.fresh@example.test` | 0 purchases, no account | `README-FRESH-FIRST-001` | 100000 | First Purchase, Beginner, waiting reward, customer log message |
+| `demo.one-purchase@example.test` | 1 purchase, NGN 1,000 spent | `README-SPEND-5000-001` | 400000 | NGN 5,000 Spent only |
+| `demo.two-purchases@example.test` | 2 purchases | `README-THREE-PURCHASES-001` | 100000 | 3 Purchases only |
+| `demo.intermediate-next@example.test` | 4 purchases, 3 achievements | `README-INTERMEDIATE-001` | 100000 | 5 Purchases, Intermediate, second waiting reward, customer log message |
+| `demo.advanced-next@example.test` | 9 purchases, 7 achievements | `README-ADVANCED-001` | 100000 | 10 Purchases, Advanced, third waiting reward, customer log message |
+| `demo.master-next@example.test` | 24 purchases, 9 achievements | `README-MASTER-001` | 100000 | 25 Purchases, Master, fourth waiting reward, customer log message |
+| `demo.complete@example.test` | All 10 achievements and 4 badges | `README-COMPLETE-NOOP-001` | 100000 | Purchase accepted; no new achievement, badge, or reward |
+| `demo.payout-success@example.test` | 0 purchases, verified Fake account | `README-PAYOUT-SUCCESS-001` | 100000 | First Purchase, Beginner, reward `paid` |
+| `demo.payout-insufficient@example.test` | 0 purchases, verified Fake account | `README-PAYOUT-INSUFFICIENT-001` | 100000 | With insufficient-funds configuration: reward `awaiting_funds` and support log message |
 
-```dotenv
-PAYMENT_DRIVER=paystack
-PAYSTACK_SECRET_KEY=<Paystack test secret>
-PAYSTACK_BASE_URL=https://api.paystack.co
-CASHBACK_SUPPORT_EMAIL=support@example.test
-```
+For example, log in as `demo.intermediate-next@example.test`, record the table's purchase from the SYSTEM tab, then repeat the two CUSTOMER reads. Expect `5 Purchases`, current badge `Intermediate`, and a second waiting reward.
 
-Only a secret whose prefix identifies a test key is accepted; a missing, public, whitespace-padded, malformed, or live key fails before network I/O and cannot authenticate a callback. Paystack uses the same integration secret for API authentication and webhook HMAC—not a separate application-owned webhook secret. Supporting live keys later requires a separately reviewed, mode-aware policy and operational controls; renaming the validation method would not make this service live-ready. Never commit or paste a real secret into documentation, fixtures, logs, screenshots, or issue text. Long-lived Horizon workers must be restarted after changing driver or credential configuration:
+Demo personas exist only in Laravel's `local` and `testing` environments. Rerunning the seeder adds missing fixture facts but does not rewind a reward or payout result you already changed. Use the full reset near the end of this README when you need the original snapshots again.
+
+## Configure Fake payments and logged mail
+
+### Fake payout-account verification
+
+`FAKE_PAYOUT_ACCOUNT_SCENARIO` is read by the web application when a customer calls `PUT /api/me/payout-account`.
+
+| Value | API result |
+| --- | --- |
+| `success` | Verifies and stores a deterministic masked Fake account |
+| `rejected` | Returns `422 payout_account_rejected` |
+| Any unsupported value | Returns `503 payment_provider_unavailable` |
+
+### Fake cashback transfer
+
+`FAKE_TRANSFER_SCENARIO` is read by Horizon when it processes the payout job.
+
+| Value | Reward state | Payout state | Support message |
+| --- | --- | --- | --- |
+| `success` | `paid` | `succeeded` | No |
+| `pending` | `pending` | `pending` | No |
+| `insufficient_funds` | `awaiting_funds` | `insufficient_funds` | Yes |
+| `permanent_failure` | `requires_attention` | `rejected` | Yes |
+
+To demonstrate insufficient funds:
+
+1. Set this exact value in your uncommitted `.env`:
+
+   ```dotenv
+   FAKE_TRANSFER_SCENARIO=insufficient_funds
+   ```
+
+2. Clear cached configuration and reload the long-running worker:
+
+   ```bash
+   docker compose exec -T app php artisan config:clear
+   docker compose restart horizon
+   ```
+
+3. Open two fresh Scalar tabs and repeat the login and authorization steps. Use `demo.payout-insufficient@example.test` in the CUSTOMER tab and the seeded purchase-system identity in the SYSTEM tab. Record this purchase from the SYSTEM tab, replacing `user_id` with the value returned by customer login:
+
+   ```json
+   {
+     "user_id": 9,
+     "external_reference": "README-PAYOUT-INSUFFICIENT-001",
+     "amount_minor": 100000,
+     "currency": "NGN",
+     "completed_at": "2026-08-24T18:00:00Z"
+   }
+   ```
+
+   Give Horizon a few seconds, then run **List the current customer's cashback rewards** in the CUSTOMER tab. The reward should be `awaiting_funds`. Use the returned ID rather than assuming the example `9` matches your database.
+
+4. In Pail, expect a message to the configured `CASHBACK_SUPPORT_EMAIL` with subject `Cashback payout requires attention`.
+
+Set the scenario before creating the reward. One reward owns one durable payout and its first result is sticky; changing `.env` later does not create a public retry operation or rewrite that payout.
+
+Restore `FAKE_TRANSFER_SCENARIO=success`, then reload the worker before returning to the golden path:
 
 ```bash
+docker compose exec -T app php artisan config:clear
 docker compose restart horizon
 ```
 
-Paystack payout-account onboarding keeps the application contract provider-neutral. Internally, the adapter calls `GET /bank/resolve` with the string account number and bank code, uses the returned canonical name in `POST /transferrecipient`, and returns only the recipient code plus masked bank metadata. The full account number and provider payload are discarded rather than persisted.
+### Logged mail
 
-Cashback transfers use one `POST /transfer` with source `balance`, the snapshotted amount and recipient, and the reward's existing stable reference. Paystack's test guide documents immediate `success`, while the general OTP-disabled API flow may return `pending`; the adapter maps the actual `data.status` instead of inferring a transfer result from HTTP `200` or response text. A timeout, malformed response, contradictory envelope, or unknown provider state stays ambiguous and is not automatically re-posted. `GET /balance` is available as an advisory readiness check rather than a reservation. After initiation, only a matching signed Paystack callback can change a non-final Paystack payout; the service does not poll Paystack for transfer status.
+The default is:
 
-The default and CI path remains credential-free: `phpunit.xml` pins the fake driver, Paystack's official API base URL, and a blank Paystack key, while Laravel HTTP fakes prove the exact Paystack URLs, Bearer header, JSON/query payloads, configured timeout options, synthetic timeout classifications, response mappings, and one-request behavior without contacting Paystack. Paystack test versus live mode is selected by the credential, not by a different base URL.
-
-#### Optional sandbox smoke test
-
-This check is optional and never gates CI or the required reviewer flow. Immediately before running it:
-
-1. Confirm the Paystack Dashboard is in test mode and that the secret belongs to that same integration.
-2. Recheck that **Confirm transfers before sending** is unchecked; this is mutable Dashboard state, not an application guarantee.
-3. Read the available NGN balance through the Dashboard or `GET /balance`. Ensure it can cover NGN 300 plus Paystack's applicable fee.
-4. If needed, prepare test funds outside this service with the Dashboard's test top-up flow or a manually initialized test checkout, verify that test transaction, and read the balance again. Do not add customer collection or automatic funding to this service.
-5. Put the test key in local `.env`, select `PAYMENT_DRIVER=paystack`, restart Horizon, and create or replace the customer's destination through `PUT /api/me/payout-account`. Paystack documents Zenith Bank, account `0000000000`, bank code `057`, and NGN for its Nigerian test recipient.
-6. Trigger the normal fixed NGN 300 reward flow. Accept the actual `success` or `pending` initiation result and inspect the saved payout state. If it is pending, only a matching signed Paystack callback can supply a later final state; never initiate another transfer or generate a second reference to make the smoke test pass.
-7. If Paystack returns raw `otp`, stop. The service records `otp_required`/`requires_attention` and intentionally calls none of the finalize, resend, enable-OTP, or disable-OTP endpoints. Correct the Dashboard setting and review the stopped payout; this service does not submit it again.
-8. Restore `PAYMENT_DRIVER=fake` after the smoke test and restart Horizon.
-
-Disabling per-transfer confirmation increases the impact of a stolen secret because a test transfer no longer pauses for human approval. Backend-only test keys, redacted exception boundaries, and the fake default are therefore part of the safety model. Paystack URL-based Transfers Approval may be useful production hardening, but live activation, real money, that approval protocol, automatic retries, and reconciliation are outside this phase.
-
-### Signed Paystack transfer callbacks
-
-Paystack may complete a transfer after the initiation response, so the service exposes one public server-to-server route:
-
-| Method | Route | Authentication |
-| --- | --- | --- |
-| `POST` | `/api/webhooks/paystack` | `x-paystack-signature`: HMAC SHA-512 of the exact raw body with the configured Paystack test secret |
-
-The route intentionally has no Sanctum bearer middleware: Paystack is not a customer. It authenticates the exact request bytes before JSON parsing, accepts at most 65,536 bytes, requires a canonical lowercase 128-character hexadecimal signature, and compares it with `hash_equals()`. Missing or invalid signatures return `401 invalid_webhook_signature`; oversized bodies return `413 webhook_payload_too_large`; missing, malformed, non-string, or live secret configuration returns `503 webhook_verification_unavailable`. None of those failures creates a receipt or changes a payout.
-
-Every authentic, non-duplicate delivery is handled synchronously in one short PostgreSQL transaction. The service records a privacy-minimized `provider_webhook_receipts` row with internally assigned Paystack provenance, the SHA-256 hash of the exact body, a safe bounded event label/reference when available, an optional restricted link to the fully matched payout, one final handling result, and `received_at`. It does **not** retain the raw body, signature, provider transfer/recipient code, amount, currency, reason, customer data, request/correlation ID, or generic timestamps.
-
-Receipt results answer how this service handled the delivery, not whether the transfer succeeded:
-
-| Receipt result | Meaning |
-| --- | --- |
-| `applied` | A supported, fully matched callback changed the payout state. |
-| `unchanged` | It matched, but the state transition was already applied, stale, contradictory with durable lifecycle state, or no longer allowed. |
-| `invalid` | The authentic JSON, object/type/value shape, or event/status pair was invalid. |
-| `unsupported` | The bounded event name was retained, but this service has no transition rule for it. |
-| `not_found` | No local reward/payout exists for the valid reference. |
-| `mismatch` | The reference located a candidate, but the stored payout provider, recipient, amount, currency, or known transfer code disagreed. |
-
-Only `transfer.success/success`, `transfer.failed/failed`, and `transfer.reversed/reversed` are supported. Root, `data`, and `recipient` must be JSON objects; amount must be a positive JSON integer; currency and source must be exact `NGN` and `balance`; identity strings must be printable ASCII without edge whitespace. Unknown extra fields are ignored. A reference only locates a candidate: payout provider, reward and payout reference, recipient, reward and payout amount and currency, and any already-known transfer code must still match exactly before the receipt links to a payout or state changes.
-
-The callback locks the reward first and payout second, matching initiation completion. `started`, `ambiguous`, `pending`, or `otp_required` may become succeeded, failed, or reversed; a succeeded payout accepts only a later reversal; failed, reversed, and statuses that mean no transfer was created remain unchanged. Success records `paid`; failure/reversal leave the customer owed and set `requires_attention`. The original initiation completion updates only a still-`processing` reward with a still-`started` payout, so a callback that wins the race cannot be overwritten by a stale HTTP response.
-
-Exact `(provider, body_hash)` redelivery creates no second receipt, transition, log, or alert. Semantically identical JSON with different bytes may create an `unchanged` receipt, while the locked transition remains idempotent. A local transaction failure persists neither receipt nor payout update and returns `500`, allowing Paystack to redeliver the callback; that redelivery is a notification, not another money transfer. Authentic deliveries with a final receipt return empty `200 OK`, including invalid, unsupported, missing, mismatched, and unchanged facts that redelivery cannot repair.
-
-### Payout support escalation
-
-Set a real deployment-only destination with `CASHBACK_SUPPORT_EMAIL`; `.env.example` deliberately uses the non-deliverable `support@example.test`. The first unresolved transition stamps `payouts.support_alert_requested_at` while the payout is locked, then requests one queued mail notification after commit:
-
-| Payout fact | Safe issue category | Suggested action |
-| --- | --- | --- |
-| `insufficient_funds` | `funding_required` | Restore provider funds and resolve the outstanding reward through support review. |
-| `ambiguous` | `status_uncertain` | Wait for a matching callback; if none arrives, inspect the existing transfer in Paystack without submitting another. |
-| `rate_limited` | `rate_limited` | Review provider availability and resolve the outstanding reward; the service does not resubmit it. |
-| `rejected`, `otp_required`, `failed`, `reversed` | `human_review` | Inspect the stored payout and resolve the outstanding reward. |
-
-`started`, `pending`, and `succeeded` do not alert. The notification contains only local reward and payout IDs, category, a service-owned reason, and next action—never account/customer data, provider identifiers/text, request payload, signature, or secret. `support_alert_requested_at` proves intent, not queue acceptance or mailbox delivery. A queue-push failure is reported after the financial state commits and is not made atomic by this MVP. With the local default `MAIL_MAILER=log`, the safe mail is written to the Laravel log rather than delivered; production must configure a real mail transport as well as the support address. Horizon and `failed_jobs` remain the delivery diagnostics.
-
-### Business workflow logs
-
-The service tries to write one small structured log after each important business step finishes. Queued jobs and repeated work can create the same log again or make a later step appear first. An empty achievement or badge list means the check ran but found nothing new; a missing log cannot prove that the check ran. Each new log waits for the outermost database transaction to commit. The payout-account log also waits until the per-user cache lock has been released.
-
-| Message | Level | Fields and meaning |
-| --- | --- | --- |
-| `purchase.processed` | `info` when created; `debug` for an exact duplicate | `purchase_id`, `user_id`, durable `correlation_id`, and `result` (`created` or `duplicate`) |
-| `achievement.evaluation.completed` | `info` | `purchase_id`, `user_id`, durable `correlation_id`, `unlocked_count`, and ordered `unlocked_achievement_names`, including `0` and `[]` when nothing new is unlocked |
-| `badge.evaluation.completed` | `info` | `user_id`, the latest user-achievement ID and its durable correlation ID (both `null` when the user has none), current `achievement_count`, ordered new `unlocked_badge_names`, and ordered new `cashback_reward_ids`, including empty lists |
-| `payout_account.saved` | `info` | `user_id`, `payout_account_id`, safe provider name, and `result` (`created` or `replaced`); this user-level action does not invent a purchase correlation ID |
-| `cashback.payout.processed` | `info` | Safe persisted payout state after initiation, including whether the direct result changed state or lost the race to a callback |
-| `paystack.webhook.recorded` | Result-dependent `info`, `debug`, or `warning` | One record per newly created receipt; an exact byte redelivery creates no second record |
-| `cashback.payout.support_requested` | `warning` | The first committed unresolved-payout support intent, written before its notification queue attempt |
-
-Each workflow log uses a fixed allowlist of local IDs, statuses, safe names/results, safe service errors/categories, and provider HTTP status/latency only where needed. It excludes purchase/provider references, amounts, balances, account details, account/bank/customer names, credentials, raw payloads, signatures, provider error text, complete models, requests, data-transfer objects, and exceptions. Laravel Context supplies the request ID. The saved workflow correlation ID is added only when the business record has one.
-
-These logs help with searching and debugging, but they are not an audit ledger and do not prove that a queued job succeeded. A logging failure cannot reverse saved business data. A conflict, provider failure, or database rollback writes no false success log. Database rows—especially `cashback_rewards` and `payouts`—remain the financial truth. This small feature adds no automatic retry, polling, scheduler, reconciliation worker, dashboard, trace system, or logging framework.
-
-## Purchase-driven achievements
-
-Only completed purchases are stored. The service deliberately has no pending/failed purchase states and no product, cart, inventory, or checkout model: a trusted upstream checkout system sends a completed fact after its own payment flow succeeds. Purchases are currently restricted to NGN and monetary values use integer minor units (kobo), never floating point.
-
-Two active progressions are seeded idempotently:
-
-| Group | Achievement thresholds |
-| --- | --- |
-| Purchase count | First Purchase (1), 3 Purchases (3), 5 Purchases (5), 10 Purchases (10), 25 Purchases (25) |
-| Lifetime NGN spend | NGN 5,000 (500,000 kobo), NGN 10,000 (1,000,000), NGN 25,000 (2,500,000), NGN 50,000 (5,000,000), NGN 100,000 (10,000,000) |
-
-Four badge definitions are also seeded: Beginner at 1 achievement, Intermediate at 4, Advanced at 8, and Master at 10. Every newly crossed active badge is awarded in rank order and creates one durable cashback entitlement. The cashback rule is version controlled in `config/rewards.php` as `30000` kobo in NGN.
-
-### Customer achievement progress
-
-The required progress route is declared in `routes/web.php` and intentionally has no `/api` prefix:
-
-```text
-GET /users/{user}/achievements
+```dotenv
+MAIL_MAILER=log
+CASHBACK_SUPPORT_EMAIL=support@example.test
 ```
 
-Use a customer Sanctum bearer token containing `achievements:read`. The `{user}` value must be that customer's own ID. Other customers and system accounts receive `403` even when their token has the ability.
+The service currently emits exactly two queued mail notifications:
+
+- a customer message to the customer's registered email when a badge reward needs a payout account; and
+- a support message to `CASHBACK_SUPPORT_EMAIL` when a payout requires human attention.
+
+There is no SMTP step in this reviewer journey. A real-looking email address still receives nothing while the log mailer is selected. The log proves the application chose a recipient and rendered a message; it does not prove transport or inbox delivery.
+
+Inspect live mail and workflow logs:
 
 ```bash
-curl http://localhost:8000/users/42/achievements \
-  --header 'Accept: application/json' \
-  --header 'Authorization: Bearer <customer-token>'
+docker compose exec app php artisan pail -vv
 ```
 
-The successful response has exactly five top-level fields and no `data` wrapper:
+Or inspect recent persisted log output:
+
+```bash
+docker compose exec app tail -n 200 storage/logs/laravel.log
+```
+
+### When an environment change needs a restart
+
+The repository is bind-mounted, so ordinary `.env` edits do not require an image rebuild. Laravel configuration is loaded into long-running PHP-FPM and Horizon processes, however. The calm, predictable command after changing a Laravel value is:
+
+```bash
+docker compose exec -T app php artisan config:clear
+docker compose restart app horizon
+```
+
+| Changed value | Process that must reload |
+| --- | --- |
+| `FAKE_PAYOUT_ACCOUNT_SCENARIO` | `app` |
+| `FAKE_TRANSFER_SCENARIO` | `horizon` |
+| `MAIL_*` | `horizon`; both current notifications are queued |
+| `CASHBACK_SUPPORT_EMAIL` | `app` and `horizon`; synchronous webhook support routing uses PHP-FPM, while Fake payout support routing uses Horizon |
+| `PAYMENT_DRIVER` or Paystack settings | `app` and `horizon` |
+| `APP_PORT` | Recreate `nginx`; Compose owns the host port mapping |
+| `POSTGRES_HOST_PORT` | Recreate `postgres`; Compose owns the host port mapping |
+
+For an application value, restarting without clearing a previously cached configuration can retain stale values. Clearing without restarting Horizon can leave the already-running worker on its old in-memory configuration. Use both commands above. Restarting `app` also ends any Pail process attached to that container, so run the Pail command again afterward.
+
+### Optional Paystack test mode
+
+The Fake provider is the supported default demo. If you independently choose to exercise Paystack test mode, keep the credential only in your uncommitted `.env`:
+
+```dotenv
+PAYMENT_DRIVER=paystack
+PAYSTACK_SECRET_KEY=sk_test_your_test_key
+PAYSTACK_BASE_URL=https://api.paystack.co
+```
+
+Then clear configuration and restart `app` and `horizon`. The adapter rejects live `sk_live_` keys. Never commit, paste into documentation, or screenshot a real secret. A credentialed Paystack action is not required by setup, CI, coverage, Scalar, or any guided scenario here.
+
+## Review the API contract and authorization
+
+The machine-readable contract is available at <http://localhost:8000/openapi.yaml>. Scalar renders that same file and can show a generated curl command for any operation; the repository does not maintain a second API description or a second guided client journey.
+
+Both documentation routes are restricted to Laravel's `local` and `testing` environments. Scalar does not save plaintext bearer credentials in browser storage. The signed Paystack webhook is the one operation not suited to the interactive client: changing its JSON body changes the HMAC-covered bytes, and Scalar cannot recompute a signature from the private test key. Its focused automated tests provide that proof instead.
+
+### Endpoint map
+
+| Method and path | Caller | Purpose |
+| --- | --- | --- |
+| `GET /` | Public | Service identity and status |
+| `GET /up` | Public | Framework health response |
+| `POST /api/auth/register` | Public | Create a customer and customer token |
+| `POST /api/auth/login` | Public customer | Create another customer token |
+| `POST /api/auth/system/login` | Provisioned system identity | Create a token containing only `purchases:write` |
+| `POST /api/auth/logout` | Sanctum personal access token | Revoke only the current token |
+| `GET /api/me` | Authenticated customer or system identity | Read the authenticated identity |
+| `PUT /api/me/payout-account` | Customer with `payout-accounts:write` | Verify and save one payout destination |
+| `GET /api/me/cashback-rewards` | Customer with `cashback-rewards:read` | Read owner-scoped rewards |
+| `POST /api/internal/purchases` | System with `purchases:write` | Idempotently ingest a completed purchase |
+| `POST /api/webhooks/paystack` | Valid Paystack HMAC | Apply or safely acknowledge a transfer callback |
+| `GET /users/{user}/achievements` | Owning customer with `achievements:read` | Read achievement and badge progress |
+
+Customer registration and login issue only:
+
+- `achievements:read`;
+- `payout-accounts:write`; and
+- `cashback-rewards:read`.
+
+The purchase ability is reserved for administratively provisioned system identities. The local/testing seeder provisions one predictable `.test` identity; production does not. The dedicated login validates that identity's credentials and account type, then issues only `purchases:write`. The achievement route also accepts an already-authenticated first-party Laravel session because it is in the `web` middleware group and Sanctum checks the `web` guard, but this service exposes no public session-login route; the documented and Scalar paths use bearer tokens.
+
+Every JSON API error uses the same safe shape: a stable `code`, a human-readable `message`, and an `errors` object only for validation failures. Normal responses and standardized JSON errors receive an `X-Request-ID`. Laravel's browser-style HTML exception page is the documented exception because it can be rendered after request middleware has unwound. The OpenAPI contract defines the exact operation-specific codes, status responses, nullability, headers, and examples.
+
+Money is always an integer `amount_minor` in kobo. Do not send floating-point NGN values.
+
+### Signed Paystack callbacks
+
+The webhook handler authenticates a lowercase SHA-512 HMAC over the exact raw body with the configured test secret. It rejects bodies larger than 65,536 bytes before parsing. Authentic duplicate, unsupported, malformed, unmatched, or unchanged deliveries are acknowledged safely; a matching success, failure, or reversal is applied synchronously with its receipt record.
+
+Reformatting JSON changes the signed bytes. The default Fake path neither needs nor pretends to exercise this boundary.
+
+## Run tests and quality checks
+
+All commands run inside Docker.
+
+The test runner is Pest on PHPUnit. Xdebug supplies line coverage; Laravel Pint checks formatting; Larastan runs PHPStan at level 10; `php-openapi` validates the OpenAPI 3.1 document; Composer audits the locked dependency graph; and GitHub Actions repeats the complete gate with the Docker images used by this repository.
+
+| Need | Command | What a failure means |
+| --- | --- | --- |
+| Complete test suite | `docker compose run --rm app composer test` | A unit, feature, concurrency, or architecture behavior failed |
+| Coverage | `docker compose run --rm app composer test:coverage` | A test failed or application line coverage fell below 90% |
+| Code style | `docker compose run --rm app composer lint` | Laravel Pint found formatting drift |
+| Static analysis | `docker compose run --rm app composer analyse` | Larastan found a type or control-flow problem |
+| OpenAPI | `docker compose run --rm app composer openapi:validate` | The OpenAPI 3.1 document is structurally invalid |
+| Dependency advisories | `docker compose run --rm app composer audit --locked --no-interaction` | A locked dependency has a known security advisory |
+| Every gate | `docker compose run --rm app composer quality` | Any manifest, contract, style, analysis, audit, test, or coverage gate failed |
+
+`composer quality` runs, in order:
+
+1. strict Composer manifest and lock validation;
+2. OpenAPI validation;
+3. Pint in check-only mode;
+4. Larastan static analysis;
+5. locked dependency audit; and
+6. the full test suite with a minimum 90% application coverage gate.
+
+The badge at the top reports the GitHub Actions Docker quality workflow. The coverage badge reports the enforced threshold, not a published live percentage; this repository does not use an external coverage-reporting service.
+
+Run one file when you need a fast, specific answer:
+
+```bash
+docker compose run --rm app php artisan test tests/Feature/DemoPersonaSeederTest.php
+docker compose run --rm app php artisan test tests/Feature/Achievements/AchievementProgressionTest.php
+docker compose run --rm app php artisan test tests/Feature/Badges/BadgeProgressionTest.php
+docker compose run --rm app php artisan test tests/Feature/Cashback/ProcessCashbackPayoutTest.php
+```
+
+Run the connected assessment slice:
+
+```bash
+docker compose run --rm app php artisan test \
+  tests/Feature/Purchases/PurchaseIngestionTest.php \
+  tests/Feature/Achievements/AchievementUnlockedEventTest.php \
+  tests/Feature/Achievements/AchievementProgressionTest.php \
+  tests/Feature/Badges/BadgeUnlockedEventTest.php \
+  tests/Feature/Badges/BadgeProgressionTest.php \
+  tests/Feature/Cashback/QueueCashbackPayoutsTest.php \
+  tests/Feature/Achievements/AchievementProgressApiTest.php \
+  tests/Feature/Cashback/CashbackRewardApiTest.php
+```
+
+The runtime journey and focused tests cover different kinds of evidence:
+
+| Assessment requirement | Runtime demonstration | Direct automated proof |
+| --- | --- | --- |
+| Unlock achievements from purchases | Purchase POST, then progress GET before/after | `AchievementProgressionTest.php` |
+| Fire `AchievementUnlocked` with `achievement_name` and `user` | Internal event; not exposed as a public response | `AchievementUnlockedEventTest.php` |
+| Fire `BadgeUnlocked`, then create NGN 300 cashback | Beginner badge and reward appear after one purchase | `BadgeUnlockedEventTest.php`, `QueueCashbackPayoutsTest.php` |
+| Return the required five-field achievement response | Exact before/after responses shown in the Scalar journey | `AchievementProgressApiTest.php` |
+| Protect trusted purchase ingestion | Separate system login and `purchases:write` token | `SystemLoginTest.php`, `PurchaseIngestionTest.php` |
+
+CI builds the same development and Nginx images, runs setup, starts the complete stack, checks HTTP health, and executes `composer quality`.
+
+## Add an achievement and a badge
+
+This optional exercise proves that the catalogue can grow without changing the achievement, badge, event, reward, or HTTP orchestration code. Work on a throwaway branch. Append the two new definitions; do not replace the existing definitions or edit database rows by hand.
+
+The short version is: add the two catalogue rows, make every listed test and description edit, rebuild the disposable Compose data with `setup`, prove the result through the copied endpoint journey, then run the focused and complete checks. Do not run `db:seed` separately and do not seed on top of a demo database you have already changed; the fresh reset below is what makes every copied response predictable.
+
+The example deliberately adds `NGN 150,000 Spent` instead of inserting `2 Purchases`. Inserting a threshold at two purchases would change several seeded customers' earned achievement counts and badge awards. The appended spend threshold leaves every seeded earned fact unchanged while adding one new next achievement and badge for the complete customer:
+
+```text
+demo.complete@example.test starts at NGN 100,000 spent
+  -> one NGN 50,000 purchase
+  -> NGN 150,000 Spent becomes achievement 11
+  -> achievement 11 unlocks Legend
+  -> Legend creates the customer's fifth NGN 300 reward
+```
+
+### 1. Append the two catalogue definitions
+
+In `database/seeders/AchievementCatalogueSeeder.php`, append this row after `one-hundred-thousand-spent` in the `lifetime-spend` achievement list:
+
+```php
+[
+    'code' => 'one-hundred-fifty-thousand-spent',
+    'name' => 'NGN 150,000 Spent',
+    'threshold' => 15_000_000,
+    'sort_order' => 6,
+],
+```
+
+Money thresholds use minor units: `15_000_000` kobo is NGN 150,000. The new `sort_order` places the definition after the existing spend achievements.
+
+In `database/seeders/BadgeCatalogueSeeder.php`, append:
+
+```php
+[
+    'code' => 'legend',
+    'name' => 'Legend',
+    'required_achievement_count' => 11,
+    'rank' => 5,
+],
+```
+
+Appending rank 5 avoids moving the existing unique ranks 1–4. No migration, enum, Action, listener, event, model, controller, route, Resource, provider, or `DemoPersonaSeeder` change is needed; those layers already read active catalogue rows.
+
+### 2. Update the exact tests and descriptions
+
+Make these edits before running the checks.
+
+In `tests/Feature/DomainCatalogueTest.php`, append the achievement to the exact `$achievements` expectation and Legend to the exact `$badges` expectation:
+
+```php
+['code' => 'one-hundred-fifty-thousand-spent', 'name' => 'NGN 150,000 Spent', 'threshold' => 15_000_000, 'sort_order' => 6, 'is_active' => true],
+```
+
+```php
+['code' => 'legend', 'name' => 'Legend', 'required_achievement_count' => 11, 'rank' => 5, 'is_active' => true],
+```
+
+In `tests/Feature/Achievements/AchievementProgressionTest.php`, add both sides of the new threshold:
+
+```php
+it('does not unlock the appended spend achievement below its threshold', function (): void {
+    $user = User::factory()->create();
+
+    recordQualifyingPurchase($user, 'ORDER-SPEND-ONE-HUNDRED-FIFTY-THOUSAND-BELOW', 14_999_999);
+
+    expect(unlockedCodesFor($user))->not->toContain('one-hundred-fifty-thousand-spent');
+});
+
+it('unlocks the appended spend achievement at its exact threshold', function (): void {
+    $user = User::factory()->create();
+
+    recordQualifyingPurchase($user, 'ORDER-SPEND-ONE-HUNDRED-FIFTY-THOUSAND', 15_000_000);
+
+    expect(unlockedCodesFor($user))->toBe([
+        'first-purchase',
+        'five-thousand-spent',
+        'ten-thousand-spent',
+        'twenty-five-thousand-spent',
+        'fifty-thousand-spent',
+        'one-hundred-thousand-spent',
+        'one-hundred-fifty-thousand-spent',
+    ]);
+});
+```
+
+In the boundary dataset in `tests/Feature/Achievements/GetUserAchievementProgressTest.php`, append:
+
+```php
+'Master at ten achievements' => [10, 'master', 'Master', 'Legend', 1],
+```
+
+Replace `returns no next badge after Master` with:
+
+```php
+it('returns no next badge after Legend', function (): void {
+    $user = User::factory()->create();
+    BadgeTestData::giveAchievements($user, 11);
+    grantProgressBadge($user, 'legend');
+
+    $progress = app(GetUserAchievementProgress::class)->handle($user);
+
+    expect($progress->unlockedAchievements)->toHaveCount(11)
+        ->and($progress->nextAvailableAchievements)->toBe([])
+        ->and($progress->currentBadge)->toBe('Legend')
+        ->and($progress->nextBadge)->toBeNull()
+        ->and($progress->remainingToUnlockNextBadge)->toBe(0);
+});
+```
+
+That test file also creates synthetic future badges. Change only their generated required count so the first one uses 12 instead of colliding with Legend's unique count of 11:
+
+```php
+'required_achievement_count' => 11 + $sequence,
+```
+
+Leave its existing generated rank expression unchanged.
+
+In the dataset in `tests/Feature/Badges/BadgeProgressionTest.php`, append:
+
+```php
+'legend boundary' => [11, ['beginner', 'intermediate', 'advanced', 'master', 'legend']],
+```
+
+In the `$scenarios` array in `tests/Feature/DemoPersonaSeederTest.php`, replace only the complete customer's next-action row:
+
+```php
+'demo.complete@example.test' => [
+    5_000_000,
+    ['one-hundred-fifty-thousand-spent'],
+    ['legend'],
+],
+```
+
+Do not change that file's seeded snapshot expectation. Before the new purchase, the customer still truthfully has 10 achievements, Master, four rewards, and NGN 100,000 lifetime spend.
+
+In `openapi.yaml`, update only the `BadgeName` description:
+
+```yaml
+description: Catalogue-defined badge name. The seed catalogue is Beginner, Intermediate, Advanced, Master, and Legend, but the database may contain additional definitions.
+```
+
+The achievement schema is deliberately an open string rather than an enum, so no achievement schema change is required. The existing `3 Purchases` example also remains valid.
+
+Finally, if this feature will remain in the repository, replace the `demo.complete@example.test` row in the [seeded scenario table](#try-another-seeded-scenario) with:
+
+```markdown
+| `demo.complete@example.test` | 10 of 11 achievements, Master, no account | `README-NEW-LEGEND-001` | 5000000 | NGN 150,000 Spent, Legend, fifth waiting reward, customer log message |
+```
+
+### 3. Rebuild the deterministic demo data
+
+The edited PHP files define the catalogue, but the running database still has the old rows. For a predictable demonstration, rebuild the disposable local data instead of adding the rows to an already-used database.
+
+First restore these safe reviewer values in your uncommitted `.env`; deleting volumes does not change that file:
+
+```dotenv
+APP_ENV=local
+QUEUE_CONNECTION=redis
+PAYMENT_DRIVER=fake
+FAKE_PAYOUT_ACCOUNT_SCENARIO=success
+FAKE_TRANSFER_SCENARIO=success
+MAIL_MAILER=log
+CASHBACK_SUPPORT_EMAIL=support@example.test
+```
+
+The following reset permanently deletes only this Compose project's local PostgreSQL and Redis volumes. It stops the workers before clearing the bind-mounted Laravel log, so an old queued notification cannot be written after the clear:
+
+```bash
+docker compose down --volumes --remove-orphans
+docker compose --profile tools run --rm setup
+docker compose run --rm --no-deps app php -r \
+  'file_put_contents("storage/logs/laravel.log", "");'
+docker compose up -d
+docker compose ps
+docker compose exec app php artisan horizon:status
+```
+
+`setup` runs the migrations and `DatabaseSeeder`, which runs both catalogue seeders and the demo-persona seeder. Do not run a separate `artisan db:seed` after it. Seeding alone can add the definitions, but it does not rewind used personas, tokens, rewards, queue state, or Fake transfer effects; the fresh reset is what makes this proof repeatable.
+
+Optionally watch the new notification and event-driven work:
+
+```bash
+docker compose exec app php artisan pail -vv
+```
+
+Leave Pail running while the Scalar requests execute.
+
+### 4. Open Scalar and authorize both tabs
+
+Open two fresh <http://localhost:8000/docs> tabs. In the SYSTEM tab, run **Log in a system identity** with the seeded system email, password `password`, and device name `Scalar extension system`. Copy its token into that tab's `bearerAuth` field.
+
+In the CUSTOMER tab, run **Log in a customer** with:
+
+```json
+{
+  "email": "demo.complete@example.test",
+  "password": "password",
+  "device_name": "Scalar extension customer"
+}
+```
+
+Copy the returned customer ID, then put its token in that tab's `bearerAuth` field. Run **Show the authenticated identity** in both tabs to verify the customer/system split before continuing.
+
+### 5. Prove the starting boundary
+
+In the CUSTOMER tab, run **Show a customer's achievement and badge progress** with the returned customer ID.
+
+Expect exactly one next achievement and one remaining achievement before Legend:
 
 ```json
 {
   "unlocked_achievements": [
     "First Purchase",
-    "NGN 5,000 Spent"
-  ],
-  "next_available_achievements": [
     "3 Purchases",
-    "NGN 10,000 Spent"
+    "5 Purchases",
+    "10 Purchases",
+    "25 Purchases",
+    "NGN 5,000 Spent",
+    "NGN 10,000 Spent",
+    "NGN 25,000 Spent",
+    "NGN 50,000 Spent",
+    "NGN 100,000 Spent"
   ],
-  "current_badge": "Beginner",
-  "next_badge": "Intermediate",
-  "remaining_to_unlock_next_badge": 2
+  "next_available_achievements": ["NGN 150,000 Spent"],
+  "current_badge": "Master",
+  "next_badge": "Legend",
+  "remaining_to_unlock_next_badge": 1
 }
 ```
 
-Unlocked names come from saved unlock records and use this order: group `sort_order`, group `code`, achievement `sort_order`, then achievement `code`. For each active unfinished group, the next list shows only the first active achievement the user has not earned. Inactive groups and unearned inactive achievements are omitted from next steps. Previously earned achievements and badges remain visible even if their definitions are later deactivated.
+Run **List the current customer's cashback rewards**. The response starts with `meta.total: 4`.
 
-`current_badge` is the highest badge actually awarded, not one guessed from the achievement count. `next_badge` is the lowest active rank above that saved badge, or the first active badge when current is `null`. Before the first award, current is `null`; after Master, next is `null` and remaining is `0`. If achievements are saved before the queued badge job catches up, the API uses `max(0, next badge requirement - earned achievement count)`. The remaining count therefore never goes below zero, and the API never claims an unsaved badge.
+### 6. Send the one qualifying purchase
 
-After authentication and user lookup, the progress Action runs four database queries. Adding groups or achievements does not add queries, although each query can process more rows. The Action never changes achievement, badge, or reward data, queues jobs, or uses a cache.
-
-### Trusted ingestion contract
-
-`POST /api/internal/purchases` requires all of the following:
-
-- a valid Sanctum bearer token;
-- the reserved `purchases:write` token ability;
-- an authenticated `system` account rather than a customer account; and
-- the per-system-identity limit of 120 requests per minute.
-
-System identities and their narrowly scoped tokens are provisioned administratively; public registration and login never issue `purchases:write`.
-
-```bash
-curl --request POST http://localhost:8000/api/internal/purchases \
-  --header 'Accept: application/json' \
-  --header 'Content-Type: application/json' \
-  --header 'Authorization: Bearer <system-token>' \
-  --data '{
-    "user_id": 42,
-    "external_reference": "ORDER-10042",
-    "amount_minor": 2500000,
-    "currency": "NGN",
-    "completed_at": "2026-08-21T14:30:00Z"
-  }'
-```
-
-A new purchase returns `201 Created`:
+In the SYSTEM tab, run **Record a completed purchase**. Replace `user_id` with the ID returned by customer login:
 
 ```json
 {
-  "purchase": {
-    "id": 73,
-    "user_id": 42,
-    "external_reference": "ORDER-10042",
-    "amount_minor": 2500000,
-    "currency": "NGN",
-    "completed_at": "2026-08-21T14:30:00.000000Z"
-  },
-  "was_duplicate": false
+  "user_id": 1,
+  "external_reference": "README-NEW-LEGEND-001",
+  "amount_minor": 5000000,
+  "currency": "NGN",
+  "completed_at": "2026-08-24T18:20:00Z"
 }
 ```
 
-The external reference is the idempotency key. An identical replay returns the same purchase with `200 OK` and `was_duplicate: true`; it creates no second event or unlock activity. Reusing the reference with a different customer, amount, or completion time returns `409 purchase_reference_conflict`. The internal workflow correlation ID is persisted but not exposed in the API response.
+`5000000` minor units is NGN 50,000. It raises this customer's seeded NGN 100,000 lifetime spend to exactly NGN 150,000. The purchase response is `201` with `was_duplicate: false`.
 
-### Asynchronous progression flow
+### 7. Prove the achievement, badge, event-driven reward, and replay behavior
 
-```text
-trusted POST
-    -> validate and normalize input
-    -> transactionally insert one completed purchase
-    -> dispatch PurchaseCompleted after commit
-    -> queued listener, serialized per user by a short Redis lock
-    -> PostgreSQL transaction locks that user's row
-    -> purchase-count and lifetime-NGN-spend calculators run
-    -> every newly crossed active threshold is inserted in order
-    -> dispatch one AchievementUnlocked after commit per new achievement
-    -> queued badge listener, serialized by a separate per-user Redis lock
-    -> PostgreSQL transaction locks that user's row and counts durable unlocks
-    -> every newly crossed active badge is persisted in rank order
-    -> create one NGN 300 cashback reward in the same badge transaction
-    -> for each new reward awaiting an account, queue one customer email after commit
-    -> dispatch one BadgeUnlocked after commit per new badge
-    -> queued wake-up listener asks QueueCashbackPayouts to find ready rewards for that user
-    -> queue one unique job carrying only each cashback reward ID
-    -> transactionally snapshot provider, destination, money, and reference in a payout
-    -> call the snapshotted fake or Paystack transfer gateway after the claim transaction commits
-    -> conditionally persist the factual payout result and customer-visible reward state
-```
+Give Horizon a few seconds, then repeat the progress and rewards operations in the CUSTOMER tab.
 
-The evaluator may unlock several achievement and badge thresholds for one large purchase. Separate achievement and badge Redis locks prevent each queued stage from overlapping with another delivery of the same stage without blocking the downstream job created by the upstream listener. PostgreSQL user-row locks serialize durable progression, while unique `(user_id, achievement_id)`, `(user_id, badge_id)`, and `user_badge_id` reward constraints remain the final duplicate defenses. Redelivered events remain safe.
-
-The assessment-facing event contracts are deliberately minimal and exact:
-
-```text
-AchievementUnlocked(achievement_name: string, user: User)
-BadgeUnlocked(badge_name: string, user: User)
-```
-
-Both events implement after-commit dispatch. A transaction rollback therefore removes the new history/reward rows and emits no event. Existing unlocks return as idempotent no-ops and do not emit a duplicate event.
-
-### Durable cashback entitlement and payout execution
-
-`cashback_rewards` records that the business owes one configured reward for one awarded badge. The row snapshots `amount_minor` and `currency`, carries the purchase workflow correlation ID, and receives a stable lowercase provider reference that its payout must reuse. Its two pre-payout states have different customer meanings:
-
-| Reward state | Local fact | Payout work |
-| --- | --- | --- |
-| `awaiting_payout_account` | The customer has no verified payout account | Blocked until the customer adds one |
-| `ready_for_payout` | A verified account exists and no payout has started | Eligible to be queued; it does not mean paid |
-
-Badge-first and account-first customers converge before a listener runs. A badge created without an account starts awaiting, and the later account transaction changes every clean waiting reward to ready. If the account exists first, the badge transaction creates the reward ready immediately. Both transactions lock the same customer row before deciding, so the stored state does not depend on queue timing.
-
-Only a newly inserted `awaiting_payout_account` reward requests `CashbackRewardNeedsPayoutAccount`. Laravel routes the queued mail to the customer's registered email address after the outer badge/reward transaction commits. The message names the badge and formats the snapshotted integer amount, tells the customer to add a payout account, and contains no action link, account/provider details, or internal identifiers. Account-first rewards, creation replays, and rolled-back transactions request no message. The application does not claim that the registered address is verified or that queue/mail delivery is exactly once; local mail uses the log transport and tests use the array transport.
-
-Creating the reward is not the same as paying it. `BadgeUnlocked` and `PayoutAccountVerified` are wake-up signals: `QueueCashbackPayoutsOnBadgeUnlocked` and `QueueCashbackPayoutsOnPayoutAccountVerified` ask `QueueCashbackPayouts` to re-query all ready rewards without a payout and queue one unique job per reward ID. The processor remains the correctness boundary. In a short PostgreSQL transaction it locks the reward, requires `ready_for_payout`, rechecks the verified account, snapshots the provider and destination into one durable `payouts` row, and commits before calling the gateway. A second conditional transaction records the result without letting an older response overwrite newer durable state.
-
-The reward is the customer-facing obligation: it retains the stable reference, amount, currency, business status, correlation ID, and `paid_at`. For this reward/payout pair, the singular payout owns the immutable provider/destination snapshot plus response, error, latency, balance, and provider-timing facts; the customer's current payout account remains a separate durable record. `payouts.first_result_at` records when the first non-`started` result was saved; pending, ambiguous, rate-limited, and rejected payouts therefore have a first result without falsely being called complete. If the result includes an observed balance, `observed_balance_minor` and `balance_observed_at` are stored together on that payout.
-
-The provider and destination become sticky on first claim. Changing `PAYMENT_DRIVER`, replacing the customer's account, or changing the fake scenario later cannot redirect an existing payout. Both providers receive the reward's stable reference when initiation starts. The fake stores an accepted effect atomically in Redis and returns that same effect if its gateway sees the request again; Paystack receives one initiation call, and only a matching signed callback can later change a non-final Paystack payout. Queue uniqueness and overlap locks reduce repeated work, while the PostgreSQL claim and unique `payouts.cashback_reward_id` constraint are the durable defenses.
-
-The four server-controlled fake transfer scenarios map as follows:
-
-| `FAKE_TRANSFER_SCENARIO` | Payout fact | Reward state | Fake effect created |
-| --- | --- | --- | --- |
-| `success` | `succeeded` | `paid` | yes |
-| `pending` | `pending` | `pending` | yes |
-| `insufficient_funds` | `insufficient_funds` | `awaiting_funds` | no |
-| `permanent_failure` | `rejected` | `requires_attention` | no |
-
-A created fake effect deliberately has no TTL, so a later scenario change cannot erase or replace its transfer identity. Its saved status does not later change: the Fake has no callback or status-polling flow. The insufficient-funds outcome records its observed zero balance and observation time on the payout, but the processor does not mistake an advisory balance read for a reservation. The signed Paystack callback above may finalize a matching real-adapter payout, and the first unresolved result requests support. There is still no automatic retry or scheduled reconciliation: `pending`, `processing`, `awaiting_funds`, and `requires_attention` remain durable operational facts.
-
-The project seeders create the achievement and badge catalogues plus one customer user. They create no cashback rewards, payout accounts, payouts, webhook receipts, or queued jobs. The one-payout migration therefore deliberately removes the unused `payout_attempts` table and creates `payouts` rather than copying financial history. Do not apply this destructive migration to a database that has payout or receipt history; stop and design a data-preserving migration for that different boundary.
-
-The four one-payout schema files have a required order: remove the old receipt link, drop `payout_attempts`, create `payouts`, then add the new receipt link. Under the confirmed empty-history premise, the later result-cleanup migration refuses non-empty reward/payout tables, removes copied reward diagnostics, moves balance observation time to the payout, renames `completed_at` to `first_result_at`, and replaces the old rejection vocabulary. Put the service in maintenance, drain incompatible queued payout/support payloads, and stop web, scheduler, and Horizon processes before running the complete migration batch. No application process may use an intermediate schema or old serialized enum cases. Start every process with the matching new code only after every migration succeeds. The two existing payout wake-up listener class names remain unchanged.
-
-For future ready rewards whose normal event wake-up is missed, run the bounded recovery scan manually:
-
-```bash
-docker compose run --rm app php artisan cashback:queue-payouts
-```
-
-The command calls `QueueCashbackPayouts::queueForAllUsers()`. It only queues the same reward-ID jobs, never calls a provider itself, and is safe to rerun. Its output is the number of jobs newly queued in that run; an immediate duplicate run reports zero when the unique locks already exist. Only the four documented `FAKE_TRANSFER_SCENARIO` values are accepted; an unsupported value fails before a reward is claimed. Changing the server-side scenario requires the long-lived Horizon workers to reload configuration:
-
-```bash
-docker compose restart horizon
-```
-
-There is no public endpoint for selecting a fake result.
-
-### Customer cashback rewards
-
-An authenticated customer can inspect only their own rewards:
-
-```bash
-curl 'http://localhost:8000/api/me/cashback-rewards?page=1' \
-  --header 'Accept: application/json' \
-  --header 'Authorization: Bearer <customer-token>'
-```
-
-The route requires `cashback-rewards:read` and a customer identity. It returns a fixed 20-item page ordered by newest creation time and then ID:
+The progress response becomes:
 
 ```json
 {
-  "data": [
-    {
-      "id": 81,
-      "badge_name": "Beginner",
-      "amount_minor": 30000,
-      "currency": "NGN",
-      "status": "paid",
-      "created_at": "2026-08-23T01:10:00.000000Z",
-      "updated_at": "2026-08-23T01:10:01.000000Z",
-      "paid_at": "2026-08-23T01:10:01.000000Z"
-    }
+  "unlocked_achievements": [
+    "First Purchase",
+    "3 Purchases",
+    "5 Purchases",
+    "10 Purchases",
+    "25 Purchases",
+    "NGN 5,000 Spent",
+    "NGN 10,000 Spent",
+    "NGN 25,000 Spent",
+    "NGN 50,000 Spent",
+    "NGN 100,000 Spent",
+    "NGN 150,000 Spent"
   ],
-  "links": {
-    "first": "http://localhost:8000/api/me/cashback-rewards?page=1",
-    "last": "http://localhost:8000/api/me/cashback-rewards?page=1",
-    "prev": null,
-    "next": null
-  },
-  "meta": {
-    "current_page": 1,
-    "per_page": 20,
-    "last_page": 1,
-    "total": 1
-  }
+  "next_available_achievements": [],
+  "current_badge": "Legend",
+  "next_badge": null,
+  "remaining_to_unlock_next_badge": 0
 }
 ```
 
-Provider ownership, stable references, recipient codes, payout rows, balance observations, and diagnostics are intentionally absent from this customer response.
+The rewards page now has `meta.total: 5`. Its newest item contains:
 
-Achievement and badge unlocks are permanent in the current scope. Refund ingestion, revocation, cashback clawbacks, and automatic payout recovery are not part of this milestone.
-
-## Daily operation
-
-Start the existing environment:
-
-```bash
-docker compose up -d
+```json
+{
+  "badge_name": "Legend",
+  "amount_minor": 30000,
+  "currency": "NGN",
+  "status": "awaiting_payout_account",
+  "paid_at": null
+}
 ```
 
-Inspect service health:
+The waiting state is expected because this persona has no payout account. With `MAIL_MAILER=log`, Pail also shows recipient `demo.complete@example.test` and subject `Add a payout account for your cashback reward`.
+
+Send the identical purchase from the SYSTEM tab once more. It returns `200` with `was_duplicate: true`; the totals remain 11 achievements, five badges, and five rewards.
+
+### 8. Run the focused and complete checks
+
+```bash
+docker compose run --rm app php artisan test \
+  tests/Feature/ApiDocumentationTest.php \
+  tests/Feature/DomainCatalogueTest.php \
+  tests/Feature/Achievements/AchievementUnlockedEventTest.php \
+  tests/Feature/Achievements/AchievementProgressionTest.php \
+  tests/Feature/Achievements/AchievementProgressApiTest.php \
+  tests/Feature/Achievements/GetUserAchievementProgressTest.php \
+  tests/Feature/Badges/BadgeUnlockedEventTest.php \
+  tests/Feature/Badges/BadgeProgressionTest.php \
+  tests/Feature/Cashback/CashbackRewardTest.php \
+  tests/Feature/Concurrency/PurchaseAchievementConcurrencyTest.php \
+  tests/Feature/DemoPersonaSeederTest.php
+
+docker compose run --rm app composer quality
+```
+
+The focused group proves the definitions, both spend-boundary sides, both event contracts, badge progression, reward creation, the exact five-field endpoint, concurrency safety, and the seeded starting state. The Scalar requests above prove the same extension through the public HTTP boundaries. `composer quality` then validates OpenAPI, formatting, level-10 static analysis, locked dependencies, the complete test suite, and the 90% coverage floor.
+
+### 9. Revoke the two extension-demo tokens
+
+Run **Revoke the current bearer token** in each authorized Scalar tab. Each request returns `204` and revokes only its current token. Clear temporary copied values and stop Pail with `Ctrl+C` if it is running.
+
+## Understand the design and limits
+
+### Why the workflow is asynchronous
+
+The purchase endpoint commits the trusted purchase before dispatching work. Horizon then evaluates achievements, dispatches achievement events, evaluates badges, creates the unique reward, and queues a payout only when a verified account exists. After-commit dispatch prevents a worker from observing database rows that later roll back.
+
+The HTTP purchase caller receives a quick durable ingestion result; customer progression catches up through the queue. That is why the demo reads again after a short wait.
+
+### Why purchases and rewards are idempotent
+
+`external_reference` is unique. A replay with the same customer, normalized reference, amount, and completion time returns the existing purchase; contradictory facts fail closed. User-achievement, user-badge, badge-reward, and reward-payout uniqueness constraints stop normal event replays from duplicating durable outcomes.
+
+### Why the system token is separate
+
+Customers may read their own progress and rewards and manage their own payout destination. They cannot claim that a purchase happened. Only a provisioned system identity with `purchases:write` may ingest one. `POST /api/auth/system/login` checks that identity's credentials and system account type, then issues exactly that one ability; the request cannot select its role or abilities. The predictable `.test` identity exists only in local/testing seeds.
+
+### Why the Fake provider is the default
+
+Fake recipient verification and transfer outcomes implement the same provider contracts used by Paystack. They keep setup, CI, demos, and failure-state testing deterministic without credentials or live money. Transfer request and result facts are stored on the single payout; verified destination facts remain on the payout account. The customer-facing reward exposes only safe business state.
+
+### Transaction and provider boundary
+
+Database work can roll back database changes; it cannot roll back a network transfer. The payout flow first creates durable local intent, performs provider I/O outside the row-locking transaction, then records the first result in a follow-up transaction. A timeout or lost response can therefore be ambiguous. The service preserves that uncertainty rather than pretending a retry is automatically safe.
+
+### Honest limits
+
+This assessment intentionally does not include:
+
+- automatic payout retries or a public “retry transfer” button;
+- stale-state, funding, or payout-account reconciliation;
+- provider-balance monitoring or treasury automation;
+- asynchronous webhook recovery;
+- guaranteed exactly-once external email delivery;
+- a production docs portal, generated SDK, or second client-specific contract; or
+- deployment or live Paystack operations.
+
+Inspect a failed payment job before doing anything. A queue failure is evidence, not authorization to send money again.
+
+## Troubleshoot, inspect, or reset
+
+### Useful checks
 
 ```bash
 docker compose ps
-docker compose exec nginx wget --quiet --spider http://127.0.0.1/up
-```
-
-Stop the services while retaining PostgreSQL and Redis volumes. The local `vendor/` directory also remains available for the editor:
-
-```bash
-docker compose down
-```
-
-To change the host HTTP port, set `APP_PORT` for the Compose command:
-
-```bash
-APP_PORT=8080 docker compose up -d
-```
-
-## Database tools
-
-PostgreSQL is available to database clients on the host loopback interface only. For TablePlus or another database client, use:
-
-| Setting | Value |
-| --- | --- |
-| Host | `127.0.0.1` |
-| Port | `5433` |
-| User | `achievement_rewards` |
-| Password | `local_password` |
-| Database | `achievement_rewards` |
-| SSL | disabled |
-
-Laravel containers continue to connect through `postgres:5432` on the private Compose network. The host port exists only for local development tools and is not reachable through the Mac's LAN address.
-
-If host port `5433` is already occupied, change `POSTGRES_HOST_PORT` in `.env` and recreate the PostgreSQL container:
-
-```bash
-docker compose up -d --force-recreate postgres
-```
-
-## Tests and quality
-
-All project commands run inside the development image:
-
-```bash
-docker compose run --rm app composer test
-docker compose run --rm app composer test:coverage
-docker compose run --rm app composer lint
-docker compose run --rm app composer analyse
-docker compose run --rm app composer audit
-docker compose run --rm app composer quality
-```
-
-`composer quality` validates `composer.json`, checks formatting, runs Larastan at level 10, enforces the 90% line-coverage floor, and audits locked dependencies.
-
-The automated suite never needs a Paystack account, real credential, funded balance, mailbox, or network connection. Paystack API coverage uses `Http::fake()`; callback coverage signs synthetic exact bodies with a reserved test-only fixture secret, and notification coverage fakes or intentionally fails the dispatcher. The optional credentialed sandbox procedure above is separate manual evidence.
-
-Use the mutating formatter only when intentionally fixing style:
-
-```bash
-docker compose run --rm app composer lint:fix
-```
-
-Inspect and verify the achievement-to-reward-entitlement wiring:
-
-```bash
-docker compose run --rm app php artisan route:list --path=api/internal/purchases
-docker compose run --rm app php artisan route:list --path=users -v
-docker compose run --rm app php artisan route:list --path=api/me/payout-account
-docker compose run --rm app php artisan route:list --path=api/me/cashback-rewards
-docker compose run --rm app php artisan route:list --path=api/webhooks/paystack
-docker compose run --rm app php artisan help cashback:queue-payouts
-docker compose run --rm app php artisan event:list
-docker compose run --rm app php artisan test tests/Feature/Purchases tests/Feature/Achievements tests/Feature/Badges tests/Feature/Cashback tests/Feature/Payouts tests/Feature/Payments tests/Feature/Webhooks tests/Feature/Concurrency
-docker compose run --rm app composer quality
-```
-
-For a disposable local database, the following command proves that the schema and seeders work from an empty state and remain safe to rerun. It deletes all data in the configured local database:
-
-```bash
-docker compose run --rm app php artisan migrate:fresh --seed --force
-docker compose run --rm app php artisan db:seed --force
-```
-
-## Services
-
-| Service | Responsibility |
-| --- | --- |
-| `nginx` | HTTP entry point on port 8000 |
-| `app` | PHP 8.4 FPM application runtime |
-| `postgres` | PostgreSQL 17 source of truth |
-| `redis` | Queues, cache, locks, and Horizon state |
-| `horizon` | Redis queue workers |
-| `scheduler` | Laravel scheduled tasks |
-| `setup` | Explicit, one-time/repeatable setup command |
-
-The app, Horizon, scheduler, tests, and quality tools use the same development image. The Dockerfile also provides a separate production target without development dependencies or Xdebug and with OPcache enabled.
-
-## Useful diagnostics
-
-```bash
-docker compose logs -f nginx app
-docker compose logs -f horizon scheduler
-docker compose exec app php artisan about
+docker compose exec app php artisan horizon:status
+docker compose exec app php artisan queue:failed
 docker compose exec app php artisan migrate:status
+docker compose exec app php artisan db:show --counts
+docker compose logs --tail=100 horizon
 ```
 
-## Resetting local infrastructure
+Open the local Horizon dashboard at <http://localhost:8000/horizon>.
 
-This removes the local PostgreSQL and Redis volumes. It is destructive to local development data, but it does not delete the Git-ignored `vendor/` directory:
+The durable PostgreSQL reward and payout rows are financial truth. Logs provide request IDs, workflow correlation context, and seven bounded business milestones; they do not replace state or authorize a retry.
+
+### Start and stop without deleting data
 
 ```bash
-docker compose down --volumes
+docker compose up -d
+docker compose stop
 ```
 
-Run the first-time setup commands again afterward.
+`docker compose down` removes containers and the network but preserves named volumes unless `--volumes` is supplied.
 
-## Security notes
+### Restore the exact demo state
 
-- `.env` and production environment files are excluded from Git and the Docker build context.
-- The credentials in `.env.example` are local-development defaults only.
-- Production secrets must be injected by the deployment environment.
-- Full payout account numbers are accepted only over the protected request boundary for recipient creation and are never persisted or returned.
-- Paystack integration accepts test keys only; the fake remains the default and no live-money path is supported.
-- Paystack callback authentication uses the same test integration secret over exact raw bytes. The receipt retains only a bounded event/reference plus local handling metadata, and structured logs retain only their documented safe allowlists; neither they nor support mail retain secrets, signatures, raw payloads, provider reason text, or account/customer data.
-- The production image runs application processes as the unprivileged `app` user.
-- Horizon is available locally and denied by default in non-local environments until an explicit authorization rule is added with authentication.
+This is the pressure-proof reset button. It permanently deletes this Compose project's local PostgreSQL and Redis volumes, including customers, tokens, purchases, rewards, queue state, and failed jobs. It also clears the local Laravel log so an earlier notification cannot be mistaken for the new demonstration.
+
+First restore the safe reviewer values in your uncommitted `.env`; deleting volumes does not change that file:
+
+```dotenv
+APP_ENV=local
+QUEUE_CONNECTION=redis
+PAYMENT_DRIVER=fake
+FAKE_PAYOUT_ACCOUNT_SCENARIO=success
+FAKE_TRANSFER_SCENARIO=success
+MAIL_MAILER=log
+CASHBACK_SUPPORT_EMAIL=support@example.test
+```
+
+Then rebuild the exact data snapshot:
+
+```bash
+docker compose down --volumes --remove-orphans
+docker compose --profile tools run --rm setup
+docker compose run --rm --no-deps app php -r \
+  'file_put_contents("storage/logs/laravel.log", "");'
+docker compose up -d
+```
+
+Use it before a repeatable demonstration so old queue jobs, references, and sticky payout results cannot affect the story.
+
+### Revoke generated demo tokens
+
+Each successful login creates a persisted Sanctum token; the current configuration does not expire it automatically. While a token is still copied or selected in Scalar, use **Revoke the current bearer token** as shown in [the guided demo](#9-revoke-both-generated-tokens). If the token value is lost in this disposable local environment, the full reset deletes every seeded user's tokens with the database volume.
+
+### If a read has not caught up
+
+Check:
+
+```bash
+docker compose exec app php artisan horizon:status
+docker compose exec app php artisan queue:failed
+docker compose logs --tail=100 horizon
+```
+
+If Horizon is running and no job failed, wait and repeat the GET request. Do not send a new purchase reference as a polling mechanism.
+
+### If an edited environment value appears stale
+
+```bash
+docker compose exec -T app php artisan config:clear
+docker compose restart app horizon
+```
+
+Then trigger a fresh, unused persona. An already-created payout keeps its durable first result.

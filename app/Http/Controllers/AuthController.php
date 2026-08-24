@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace App\Http\Controllers;
 
 use App\Actions\Auth\LoginCustomer;
+use App\Actions\Auth\LoginSystem;
 use App\Actions\Auth\RegisterCustomer;
 use App\Actions\Auth\RevokeCurrentToken;
 use App\Http\Requests\Auth\LoginRequest;
@@ -21,6 +22,7 @@ final class AuthController extends Controller
     public function __construct(
         private readonly RegisterCustomer $registerCustomer,
         private readonly LoginCustomer $loginCustomer,
+        private readonly LoginSystem $loginSystem,
         private readonly RevokeCurrentToken $revokeCurrentToken,
     ) {}
 
@@ -34,6 +36,11 @@ final class AuthController extends Controller
     public function login(LoginRequest $request): AuthenticationResource
     {
         return new AuthenticationResource($this->loginCustomer->handle($request->toInput()));
+    }
+
+    public function loginSystem(LoginRequest $request): AuthenticationResource
+    {
+        return new AuthenticationResource($this->loginSystem->handle($request->toInput()));
     }
 
     public function logout(#[CurrentUser] User $user): Response
