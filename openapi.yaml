@@ -1,0 +1,1736 @@
+openapi: 3.1.0
+
+info:
+  title: Achievement Rewards Service API
+  version: 1.0.0
+  description: |
+    API contract for the assessment service's HTTP surface.
+
+    Customer and system authentication return separate least-privilege Laravel
+    Sanctum bearer tokens. The trusted purchase-ingestion endpoint requires an
+    administratively provisioned system identity and the `purchases:write` ability.
+
+    Request schemas show canonical client values. Laravel may trim surrounding
+    whitespace or normalize letter case before validation where an operation says
+    so, but clients should send the canonical forms shown here.
+
+servers:
+  - url: /
+    description: Same origin as the running service
+
+tags:
+  - name: Service
+    description: Service identity and health checks.
+  - name: Authentication
+    description: Customer registration, customer/system login, token revocation, and identity.
+  - name: Cashback
+    description: Customer payout-account and cashback-reward endpoints.
+  - name: Purchases
+    description: Trusted internal purchase ingestion.
+  - name: Webhooks
+    description: Signed Paystack transfer callbacks.
+  - name: Achievements
+    description: Customer achievement and badge progress.
+
+paths:
+  /:
+    get:
+      tags: [Service]
+      operationId: showServiceStatus
+      summary: Show the service identity
+      responses:
+        '200':
+          description: The service is running.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ServiceStatus'
+              example:
+                name: Achievement Rewards Service
+                status: ok
+        '500':
+          description: |
+            An unexpected server error occurred. JSON requests receive the safe
+            standard error envelope and an `X-Request-ID`. Browser-style requests
+            receive Laravel's HTML exception response instead; in a local
+            environment with debug mode enabled, that HTML can contain diagnostic
+            details. A response-level request-ID header is therefore not promised
+            across both representations.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InternalServerError'
+              example:
+                code: internal_server_error
+                message: An unexpected error occurred.
+            text/html:
+              schema:
+                type: string
+
+  /up:
+    get:
+      tags: [Service]
+      operationId: showHealth
+      summary: Check application health
+      description: |
+        Laravel's framework health route. Clients that send
+        `Accept: application/json` receive the documented JSON shape; browser
+        requests without that header receive an HTML health page. If a registered
+        health listener throws, non-debug environments report `status: down`.
+        Debug environments rethrow it: JSON requests receive the standard safe
+        internal-error envelope, while browser-style requests receive Laravel's
+        debug HTML exception response.
+      responses:
+        '200':
+          description: The application health checks passed.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/HealthStatus'
+                  - type: object
+                    properties:
+                      status:
+                        const: up
+              example:
+                status: up
+            text/html:
+              schema:
+                type: string
+              example: '<!DOCTYPE html><html lang="en">...Application up...</html>'
+        '500':
+          description: |
+            A registered application health check failed. Non-debug responses
+            report `status: down`. A rethrown debug exception uses the safe
+            standard envelope and an `X-Request-ID` for JSON requests, but
+            Laravel's HTML exception response for browser-style requests. A
+            response-level request-ID header is therefore not promised across
+            both representations.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - allOf:
+                      - $ref: '#/components/schemas/HealthStatus'
+                      - type: object
+                        properties:
+                          status:
+                            const: down
+                  - $ref: '#/components/schemas/InternalServerError'
+              examples:
+                health-check-failed:
+                  summary: Failure reported with debug mode disabled
+                  value:
+                    status: down
+                debug-exception:
+                  summary: Listener exception handled with debug mode enabled
+                  value:
+                    code: internal_server_error
+                    message: An unexpected error occurred.
+            text/html:
+              schema:
+                type: string
+
+  /api/auth/register:
+    post:
+      tags: [Authentication]
+      operationId: registerCustomer
+      summary: Register a customer
+      description: |
+        Creates a customer account and returns a Sanctum bearer token with the
+        three customer abilities. `name` and `email` are trimmed, the email is
+        lowercased, and an omitted `device_name` becomes `api`. A submitted blank
+        device name fails validation after Laravel trims and nulls empty input.
+        Public callers cannot choose `account_type`. Registration is limited to
+        five requests per minute per client IP.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterCustomerRequest'
+            example:
+              name: Ibrahim Abdul
+              email: ibrahim@example.com
+              password: secure-password
+              password_confirmation: secure-password
+              device_name: Scalar demo
+      responses:
+        '201':
+          description: The customer and bearer token were created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerAuthentication'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/login:
+    post:
+      tags: [Authentication]
+      operationId: loginCustomer
+      summary: Log in a customer
+      description: |
+        Authenticates a customer account and returns a new least-privilege
+        Sanctum bearer token. The limiter allows five attempts per minute for a
+        normalized email and client IP. System identities cannot use this public
+        login endpoint.
+
+        Local/testing setup seeds `demo.fresh@example.test` with password
+        `password` for the guided Scalar journey.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: demo.fresh@example.test
+              password: password
+              device_name: Scalar customer demo
+      responses:
+        '200':
+          description: The customer was authenticated and a token was issued.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerAuthentication'
+        '401':
+          description: The email or password is incorrect, or the identity is not a customer.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvalidCredentialsError'
+              example:
+                code: invalid_credentials
+                message: The provided credentials are incorrect.
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/system/login:
+    post:
+      tags: [Authentication]
+      operationId: loginSystem
+      summary: Log in a system identity
+      description: |
+        Authenticates an administratively provisioned system identity and returns
+        a new Sanctum bearer token containing only `purchases:write`. Customer
+        identities cannot use this endpoint and callers cannot request an account
+        type or additional abilities. This endpoint and customer login share the
+        five-attempt-per-minute bucket for a normalized email and client IP.
+
+        Local/testing setup seeds `demo.purchase-system@example.test` with password
+        `password` and no pre-generated token. Production setup does not seed that
+        predictable identity. Each successful login persists a new token until the
+        caller revokes it through logout or the database is reset; the current
+        Sanctum configuration does not apply automatic token expiry.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+            example:
+              email: demo.purchase-system@example.test
+              password: password
+              device_name: Scalar system demo
+      responses:
+        '200':
+          description: The system identity was authenticated and a purchase-ingestion token was issued.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemAuthentication'
+        '401':
+          description: The email or password is incorrect, or the identity is not a system account.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvalidCredentialsError'
+              example:
+                code: invalid_credentials
+                message: The provided credentials are incorrect.
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/auth/logout:
+    post:
+      tags: [Authentication]
+      operationId: logout
+      summary: Revoke the current bearer token
+      description: |
+        Revokes only the persisted Sanctum token used for this request. No token
+        ability or customer account type is required.
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: The current bearer token was revoked. The response has no body.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/me:
+    get:
+      tags: [Authentication]
+      operationId: showCurrentUser
+      summary: Show the authenticated identity
+      description: |
+        Returns the user authenticated by the current persisted Sanctum token.
+        Both customer and trusted system identities can use this endpoint; it has
+        no ability check.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The authenticated identity.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/User'
+              example:
+                id: 1
+                name: Ibrahim Abdul
+                email: ibrahim@example.com
+                account_type: customer
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/me/payout-account:
+    put:
+      tags: [Cashback]
+      operationId: savePayoutAccount
+      summary: Create or replace the current customer's payout account
+      description: |
+        Requires a customer identity and the `payout-accounts:write` token
+        ability. The provider verifies the submitted destination before the
+        service stores it. The response never returns the full account number or
+        provider recipient code. The limiter allows five updates per minute per
+        customer.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SavePayoutAccountRequest'
+            example:
+              account_number: '0000001234'
+              bank_code: '057'
+      responses:
+        '200':
+          description: The customer's existing payout destination was replaced.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutAccount'
+        '201':
+          description: The customer's first payout destination was created.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayoutAccount'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The update is busy or conflicts with an existing destination.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/PayoutAccountBusyError'
+                  - $ref: '#/components/schemas/PayoutAccountConflictError'
+              examples:
+                busy:
+                  summary: Another update currently holds the customer lock
+                  value:
+                    code: payout_account_busy
+                    message: Another payout account update is already in progress.
+                conflict:
+                  summary: The verified destination belongs to another customer
+                  value:
+                    code: payout_account_conflict
+                    message: The payout account conflicts with an existing destination.
+        '422':
+          description: The fields are invalid or the provider rejected the destination.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/ValidationError'
+                  - $ref: '#/components/schemas/PayoutAccountRejectedError'
+              examples:
+                validationFailed:
+                  value:
+                    code: validation_failed
+                    message: One or more fields are invalid.
+                    errors:
+                      account_number:
+                        - The account number field format is invalid.
+                providerRejected:
+                  value:
+                    code: payout_account_rejected
+                    message: The payout account could not be verified.
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '502':
+          description: The payout-account provider returned a malformed response.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentProviderInvalidResponseError'
+              example:
+                code: payment_provider_invalid_response
+                message: The payout account provider returned an invalid response.
+        '503':
+          description: The payout-account provider is unavailable.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentProviderUnavailableError'
+              example:
+                code: payment_provider_unavailable
+                message: The payout account provider is temporarily unavailable.
+        '504':
+          description: The payout-account provider timed out.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaymentProviderTimeoutError'
+              example:
+                code: payment_provider_timeout
+                message: The payout account provider did not respond in time.
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/me/cashback-rewards:
+    get:
+      tags: [Cashback]
+      operationId: listCashbackRewards
+      summary: List the current customer's cashback rewards
+      description: |
+        Requires a customer identity and the `cashback-rewards:read` token
+        ability. Results are owner-scoped, newest first, and use a fixed page size
+        of 20. Provider references, payout diagnostics, and payout-account details
+        are never returned.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+      responses:
+        '200':
+          description: A length-aware page of the customer's rewards.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CashbackRewardPage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/internal/purchases:
+    post:
+      tags: [Purchases]
+      operationId: recordCompletedPurchase
+      summary: Record a completed purchase
+      description: |
+        Trusted internal endpoint. The bearer token must belong to a system
+        identity and include `purchases:write`. A system identity is provisioned
+        administratively; the dedicated system-login endpoint can issue its
+        least-privilege token, while customer registration and login never issue
+        that ability. A byte-for-byte replay is not required: normalized input
+        with the same external reference and matching customer, amount, and
+        completion time returns the existing purchase. The route allows 120
+        requests per minute per system identity.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordPurchaseRequest'
+            example:
+              user_id: 1
+              external_reference: ORDER-10042
+              amount_minor: 2500000
+              currency: NGN
+              completed_at: '2026-08-21T14:30:00Z'
+      responses:
+        '200':
+          description: An identical prior delivery was found and returned.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PurchaseIngestion'
+                  - type: object
+                    properties:
+                      was_duplicate:
+                        const: true
+              example:
+                purchase:
+                  id: 42
+                  user_id: 1
+                  external_reference: ORDER-10042
+                  amount_minor: 2500000
+                  currency: NGN
+                  completed_at: '2026-08-21T14:30:00.000000Z'
+                was_duplicate: true
+        '201':
+          description: The purchase was created and its domain event was dispatched after commit.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/PurchaseIngestion'
+                  - type: object
+                    properties:
+                      was_duplicate:
+                        const: false
+              example:
+                purchase:
+                  id: 42
+                  user_id: 1
+                  external_reference: ORDER-10042
+                  amount_minor: 2500000
+                  currency: NGN
+                  completed_at: '2026-08-21T14:30:00.000000Z'
+                was_duplicate: false
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          description: The external reference belongs to different purchase facts.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseReferenceConflictError'
+              example:
+                code: purchase_reference_conflict
+                message: The external reference is already associated with a different purchase.
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/webhooks/paystack:
+    post:
+      tags: [Webhooks]
+      operationId: handlePaystackWebhook
+      summary: Receive a signed Paystack transfer callback
+      description: |
+        Verifies a lowercase SHA-512 HMAC of the exact raw request body using the
+        configured Paystack test secret. The application rejects bodies larger
+        than 65,536 bytes before parsing. Authentic duplicate, unsupported,
+        malformed, unmatched, or unchanged callbacks are acknowledged with the
+        same empty `200` response after safe receipt handling.
+
+        Scalar can display this contract but cannot derive a valid HMAC after the
+        body is edited. To exercise this operation, compute the signature outside
+        Scalar from the exact bytes that will be sent and do not reformat the JSON.
+        The default Fake-provider reviewer flow does not require this callback.
+      security:
+        - paystackSignature: []
+      parameters:
+        - $ref: '#/components/parameters/PaystackSignature'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PaystackTransferWebhook'
+            example:
+              event: transfer.success
+              data:
+                reference: cashback-01k3h6w5ty7c4b9p2q8m1n6r0s
+                transfer_code: TRF_WEBHOOK_TRANSFER
+                amount: 30000
+                currency: NGN
+                source: balance
+                status: success
+                recipient:
+                  recipient_code: RCP_WEBHOOK_CUSTOMER
+      responses:
+        '200':
+          description: The authentic delivery was acknowledged. The response has no body.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+        '401':
+          description: The signature is missing, malformed, uppercase, or does not match the exact body.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InvalidWebhookSignatureError'
+              example:
+                code: invalid_webhook_signature
+                message: The webhook signature is invalid.
+        '413':
+          description: The raw request body exceeds 65,536 bytes.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookPayloadTooLargeError'
+              example:
+                code: webhook_payload_too_large
+                message: The webhook payload is too large.
+        '503':
+          description: Webhook verification is unavailable because the configured key is absent or is not a test key.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WebhookVerificationUnavailableError'
+              example:
+                code: webhook_verification_unavailable
+                message: Webhook verification is temporarily unavailable.
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /users/{user}/achievements:
+    get:
+      tags: [Achievements]
+      operationId: showAchievementProgress
+      summary: Show a customer's achievement and badge progress
+      description: |
+        Requires a customer identity and ownership of the requested user ID. A
+        persisted bearer token must include `achievements:read`. Because this
+        route uses Laravel's `web` middleware and Sanctum checks the `web` guard,
+        an already-authenticated first-party session is also accepted and receives
+        Sanctum's transient all-abilities token. This service exposes no public
+        session-login route; Scalar and the documented reviewer flow use bearer
+        authentication. Each incomplete achievement group contributes at most its
+        next active achievement.
+      security:
+        - bearerAuth: []
+        - laravelSession: []
+      parameters:
+        - $ref: '#/components/parameters/UserId'
+      responses:
+        '200':
+          description: The customer's current achievement and badge progress.
+          headers:
+            X-Request-ID:
+              $ref: '#/components/headers/RequestId'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AchievementProgress'
+              example:
+                unlocked_achievements:
+                  - First Purchase
+                  - NGN 5,000 Spent
+                next_available_achievements:
+                  - 3 Purchases
+                  - NGN 10,000 Spent
+                current_badge: Beginner
+                next_badge: Intermediate
+                remaining_to_unlock_next_badge: 2
+        '401':
+          $ref: '#/components/responses/AchievementUnauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: Sanctum personal access token
+      description: |
+        Use the plaintext token returned by the matching login endpoint. Customer
+        tokens contain `achievements:read`, `payout-accounts:write`, and
+        `cashback-rewards:read`. System login returns only `purchases:write` for
+        the internal purchase endpoint.
+    laravelSession:
+      type: apiKey
+      in: cookie
+      name: achievement-rewards-service-session
+      description: |
+        Existing first-party Laravel session checked by Sanctum on the web-group
+        achievement route. The default cookie name is shown; `SESSION_COOKIE` can
+        override it. This service exposes no public session-login endpoint.
+    paystackSignature:
+      type: apiKey
+      in: header
+      name: x-paystack-signature
+      description: |
+        Paystack webhook authentication: a lowercase SHA-512 HMAC of the exact
+        raw request body using the configured Paystack test secret. The separate
+        required header parameter documents its exact length and character shape.
+
+  headers:
+    RequestId:
+      description: A new ULID identifying this HTTP request. It is not the durable workflow correlation ID.
+      required: true
+      schema:
+        type: string
+        minLength: 26
+        maxLength: 26
+        pattern: '^[0-7][0-9A-HJKMNP-TV-Z]{25}$'
+      example: 01K3H6W5TY7C4B9P2Q8M1N6R0S
+    BearerChallenge:
+      description: Authentication scheme required by the protected route.
+      required: true
+      schema:
+        type: string
+        enum: [Bearer]
+    RetryAfter:
+      description: Seconds until the client may retry the rate-limited request.
+      required: true
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 60
+      example: 60
+
+  parameters:
+    Page:
+      name: page
+      in: query
+      required: false
+      description: One-based page number. The page size is fixed at 20 and cannot be overridden; any other query field is rejected.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+        default: 1
+      example: 1
+    UserId:
+      name: user
+      in: path
+      required: true
+      description: Positive database ID of the authenticated customer. Another customer's ID is forbidden.
+      schema:
+        type: integer
+        format: int64
+        minimum: 1
+      example: 1
+    PaystackSignature:
+      name: x-paystack-signature
+      in: header
+      required: true
+      description: |
+        Exactly 128 lowercase hexadecimal characters: the SHA-512 HMAC of the
+        exact raw body using the configured `sk_test_...` Paystack secret. Scalar
+        does not calculate this value and any JSON reformatting invalidates it.
+      schema:
+        type: string
+        minLength: 128
+        maxLength: 128
+        pattern: '^[0-9a-f]{128}$'
+      example: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+  responses:
+    Unauthenticated:
+      description: A valid persisted Sanctum bearer token is required.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestId'
+        WWW-Authenticate:
+          $ref: '#/components/headers/BearerChallenge'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthenticatedError'
+          example:
+            code: unauthenticated
+            message: A valid bearer token is required.
+    AchievementUnauthenticated:
+      description: A valid persisted Sanctum bearer token or existing first-party web session is required.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestId'
+        WWW-Authenticate:
+          $ref: '#/components/headers/BearerChallenge'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/UnauthenticatedError'
+          example:
+            code: unauthenticated
+            message: A valid bearer token is required.
+    Forbidden:
+      description: The identity type, token ability, or ownership policy denies the action.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ForbiddenError'
+          example:
+            code: forbidden
+            message: You are not allowed to perform this action.
+    NotFound:
+      description: The requested route-bound resource was not found.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/NotFoundError'
+          example:
+            code: not_found
+            message: The requested resource was not found.
+    ValidationFailed:
+      description: One or more submitted fields failed validation.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+          example:
+            code: validation_failed
+            message: One or more fields are invalid.
+            errors:
+              email:
+                - The email field must be a valid email address.
+    RateLimited:
+      description: The route-specific request limit was exceeded.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestId'
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RateLimitedError'
+          example:
+            code: rate_limit_exceeded
+            message: Too many requests were made. Try again later.
+    InternalServerError:
+      description: An unexpected server error occurred. Internal details are not exposed.
+      headers:
+        X-Request-ID:
+          $ref: '#/components/headers/RequestId'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/InternalServerError'
+          example:
+            code: internal_server_error
+            message: An unexpected error occurred.
+
+  schemas:
+    ServiceStatus:
+      type: object
+      additionalProperties: false
+      required: [name, status]
+      properties:
+        name:
+          type: string
+          description: Configured application name.
+          example: Achievement Rewards Service
+        status:
+          type: string
+          enum: [ok]
+
+    HealthStatus:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [up, down]
+
+    AccountType:
+      type: string
+      enum: [customer, system]
+
+    Currency:
+      type: string
+      enum: [NGN]
+      description: ISO 4217 currency code. Money amounts in this API are integer minor units (kobo).
+
+    CustomerTokenAbility:
+      type: string
+      enum:
+        - achievements:read
+        - payout-accounts:write
+        - cashback-rewards:read
+
+    SystemTokenAbility:
+      type: string
+      enum: [purchases:write]
+
+    PaymentProvider:
+      type: string
+      enum: [fake, paystack]
+
+    CashbackRewardStatus:
+      type: string
+      enum:
+        - awaiting_payout_account
+        - ready_for_payout
+        - awaiting_funds
+        - pending
+        - processing
+        - paid
+        - requires_attention
+
+    AchievementName:
+      type: string
+      maxLength: 255
+      description: Catalogue-defined achievement name. The seed catalogue includes the names shown in reviewer examples, and the database may contain additional definitions.
+      example: First Purchase
+
+    BadgeName:
+      type: string
+      maxLength: 255
+      description: Catalogue-defined badge name. The seed catalogue is Beginner, Intermediate, Advanced, and Master, but the database may contain additional definitions.
+      example: Beginner
+
+    NullableBadgeName:
+      type: [string, 'null']
+      maxLength: 255
+      description: Catalogue-defined badge name, or null when no badge occupies this position.
+      example: Beginner
+
+    RegisterCustomerRequest:
+      type: object
+      required: [name, email, password, password_confirmation]
+      not:
+        required: [account_type]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Customer name; surrounding whitespace is removed and a blank result is invalid.
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: Unique customer email; surrounding whitespace is removed and letters are lowercased.
+        password:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 255
+        password_confirmation:
+          type: string
+          format: password
+          minLength: 8
+          maxLength: 255
+          description: Must exactly match `password`.
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Optional Sanctum token name. Omission becomes `api`; a submitted value that is blank after Laravel's input normalization is invalid.
+
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 255
+          description: Email is trimmed and lowercased before lookup.
+        password:
+          type: string
+          format: password
+          minLength: 1
+          maxLength: 255
+        device_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Optional Sanctum token name. Omission becomes `api`; a submitted value that is blank after Laravel's input normalization is invalid.
+
+    CustomerUser:
+      type: object
+      additionalProperties: false
+      required: [id, name, email, account_type]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          maxLength: 255
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        account_type:
+          type: string
+          enum: [customer]
+
+    SystemUser:
+      type: object
+      additionalProperties: false
+      required: [id, name, email, account_type]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          maxLength: 255
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        account_type:
+          type: string
+          enum: [system]
+
+    User:
+      type: object
+      additionalProperties: false
+      required: [id, name, email, account_type]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        name:
+          type: string
+          maxLength: 255
+        email:
+          type: string
+          format: email
+          maxLength: 255
+        account_type:
+          $ref: '#/components/schemas/AccountType'
+
+    CustomerAuthentication:
+      type: object
+      additionalProperties: false
+      required: [user, token, token_type, abilities]
+      properties:
+        user:
+          $ref: '#/components/schemas/CustomerUser'
+        token:
+          type: string
+          minLength: 1
+          description: Plaintext Sanctum token. Store it securely; later responses do not return it again.
+          example: 1|ars_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA2ae98c30
+        token_type:
+          type: string
+          enum: [Bearer]
+        abilities:
+          type: array
+          minItems: 3
+          maxItems: 3
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/CustomerTokenAbility'
+          example:
+            - achievements:read
+            - payout-accounts:write
+            - cashback-rewards:read
+
+    SystemAuthentication:
+      type: object
+      additionalProperties: false
+      required: [user, token, token_type, abilities]
+      properties:
+        user:
+          $ref: '#/components/schemas/SystemUser'
+        token:
+          type: string
+          minLength: 1
+          description: Plaintext Sanctum token. Store it securely; later responses do not return it again.
+          example: 2|ars_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB7fc14a20
+        token_type:
+          type: string
+          enum: [Bearer]
+        abilities:
+          type: array
+          minItems: 1
+          maxItems: 1
+          uniqueItems: true
+          items:
+            $ref: '#/components/schemas/SystemTokenAbility'
+          example:
+            - purchases:write
+
+    SavePayoutAccountRequest:
+      type: object
+      additionalProperties: false
+      required: [account_number, bank_code]
+      properties:
+        account_number:
+          type: string
+          minLength: 10
+          maxLength: 10
+          pattern: '^[0-9]{10}$'
+          description: >-
+            Exactly 10 decimal digits after surrounding whitespace is removed.
+            Treated as sensitive and never returned in full.
+          example: '0000001234'
+        bank_code:
+          type: string
+          minLength: 3
+          maxLength: 3
+          pattern: '^[0-9]{3}$'
+          description: Exactly 3 decimal digits after surrounding whitespace is removed.
+          example: '057'
+
+    PayoutAccount:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - provider
+        - account_name
+        - bank_name
+        - bank_code
+        - masked_account_number
+        - currency
+        - verified_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        provider:
+          $ref: '#/components/schemas/PaymentProvider'
+        account_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Demo Customer
+        bank_name:
+          type: string
+          minLength: 1
+          maxLength: 255
+          example: Demo Bank
+        bank_code:
+          type: string
+          minLength: 3
+          maxLength: 3
+          pattern: '^[0-9]{3}$'
+          example: '057'
+        masked_account_number:
+          type: string
+          minLength: 10
+          maxLength: 10
+          pattern: '^[*]{6}[0-9]{4}$'
+          example: '******1234'
+        currency:
+          $ref: '#/components/schemas/Currency'
+        verified_at:
+          type: string
+          format: date-time
+          example: '2026-08-24T12:30:00.000000Z'
+
+    RecordPurchaseRequest:
+      type: object
+      required: [user_id, external_reference, amount_minor, currency, completed_at]
+      description: The external reference and completion time are trimmed, and the currency is trimmed and uppercased, before validation.
+      properties:
+        user_id:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Existing customer account ID; a system identity is not a valid target.
+        external_reference:
+          type: string
+          minLength: 1
+          maxLength: 255
+          description: Trusted upstream purchase ID. Surrounding whitespace is removed and a blank result is invalid.
+        amount_minor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Positive whole-number purchase amount in kobo; fractional values are rejected.
+        currency:
+          $ref: '#/components/schemas/Currency'
+        completed_at:
+          type: string
+          format: date-time
+          description: Completion time. Surrounding whitespace is removed before validation; the accepted value is persisted and returned in UTC.
+
+    Purchase:
+      type: object
+      additionalProperties: false
+      required: [id, user_id, external_reference, amount_minor, currency, completed_at]
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        user_id:
+          type: integer
+          format: int64
+          minimum: 1
+        external_reference:
+          type: string
+          minLength: 1
+          maxLength: 255
+        amount_minor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Purchase amount in kobo.
+        currency:
+          $ref: '#/components/schemas/Currency'
+        completed_at:
+          type: string
+          format: date-time
+
+    PurchaseIngestion:
+      type: object
+      additionalProperties: false
+      required: [purchase, was_duplicate]
+      properties:
+        purchase:
+          $ref: '#/components/schemas/Purchase'
+        was_duplicate:
+          type: boolean
+          description: True only when the same normalized purchase delivery already existed.
+
+    CashbackReward:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - badge_name
+        - amount_minor
+        - currency
+        - status
+        - created_at
+        - updated_at
+        - paid_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          minimum: 1
+        badge_name:
+          $ref: '#/components/schemas/BadgeName'
+        amount_minor:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Cashback amount in kobo.
+          example: 30000
+        currency:
+          $ref: '#/components/schemas/Currency'
+        status:
+          $ref: '#/components/schemas/CashbackRewardStatus'
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        paid_at:
+          type: [string, 'null']
+          format: date-time
+          description: UTC payment time, or null until the reward is paid.
+
+    PaginationLinks:
+      type: object
+      additionalProperties: false
+      required: [first, last, prev, next]
+      properties:
+        first:
+          type: string
+          format: uri
+        last:
+          type: string
+          format: uri
+        prev:
+          type: [string, 'null']
+          format: uri
+        next:
+          type: [string, 'null']
+          format: uri
+
+    PaginationMeta:
+      type: object
+      additionalProperties: false
+      required: [current_page, per_page, last_page, total]
+      properties:
+        current_page:
+          type: integer
+          format: int64
+          minimum: 1
+        per_page:
+          type: integer
+          format: int64
+          enum: [20]
+        last_page:
+          type: integer
+          format: int64
+          minimum: 1
+        total:
+          type: integer
+          format: int64
+          minimum: 0
+
+    CashbackRewardPage:
+      type: object
+      additionalProperties: false
+      required: [data, links, meta]
+      properties:
+        data:
+          type: array
+          maxItems: 20
+          items:
+            $ref: '#/components/schemas/CashbackReward'
+        links:
+          $ref: '#/components/schemas/PaginationLinks'
+        meta:
+          $ref: '#/components/schemas/PaginationMeta'
+      example:
+        data:
+          - id: 7
+            badge_name: Beginner
+            amount_minor: 30000
+            currency: NGN
+            status: awaiting_payout_account
+            created_at: '2026-08-24T12:00:00.000000Z'
+            updated_at: '2026-08-24T12:00:00.000000Z'
+            paid_at: null
+        links:
+          first: http://localhost:8000/api/me/cashback-rewards?page=1
+          last: http://localhost:8000/api/me/cashback-rewards?page=1
+          prev: null
+          next: null
+        meta:
+          current_page: 1
+          per_page: 20
+          last_page: 1
+          total: 1
+
+    PaystackTransferWebhook:
+      type: object
+      required: [event, data]
+      description: |
+        Supported transfer callback shape. `data.status` must correspond to
+        `event`: `success`, `failed`, or `reversed`. Extra provider fields are
+        ignored. An authentic body with a different shape is still acknowledged
+        but recorded as invalid or unsupported and cannot update a payout.
+      properties:
+        event:
+          type: string
+          enum: [transfer.success, transfer.failed, transfer.reversed]
+        data:
+          $ref: '#/components/schemas/PaystackTransferData'
+      oneOf:
+        - title: Successful transfer
+          properties:
+            event:
+              const: transfer.success
+            data:
+              allOf:
+                - $ref: '#/components/schemas/PaystackTransferData'
+                - type: object
+                  properties:
+                    status:
+                      const: success
+        - title: Failed transfer
+          properties:
+            event:
+              const: transfer.failed
+            data:
+              allOf:
+                - $ref: '#/components/schemas/PaystackTransferData'
+                - type: object
+                  properties:
+                    status:
+                      const: failed
+        - title: Reversed transfer
+          properties:
+            event:
+              const: transfer.reversed
+            data:
+              allOf:
+                - $ref: '#/components/schemas/PaystackTransferData'
+                - type: object
+                  properties:
+                    status:
+                      const: reversed
+
+    PaystackPrintableIdentity:
+      type: string
+      minLength: 1
+      maxLength: 255
+      pattern: '^[!-~](?:[ -~]*[!-~])?$'
+      description: One to 255 printable ASCII characters with no leading or trailing space.
+
+    PaystackTransferData:
+      type: object
+      required: [reference, transfer_code, amount, currency, source, status, recipient]
+      properties:
+        reference:
+          allOf:
+            - $ref: '#/components/schemas/PaystackPrintableIdentity'
+          description: Must match the stored cashback reward and payout provider reference.
+        transfer_code:
+          allOf:
+            - $ref: '#/components/schemas/PaystackPrintableIdentity'
+          description: Must match an existing stored code when one is already present.
+        amount:
+          type: integer
+          format: int64
+          minimum: 1
+          description: Transfer amount in kobo; must be encoded as a strict JSON integer without a decimal point and must match both local reward and payout. JSON Schema tools may treat `30000.0` as mathematically integral, but this endpoint classifies that representation as invalid.
+        currency:
+          $ref: '#/components/schemas/Currency'
+        source:
+          type: string
+          enum: [balance]
+        status:
+          type: string
+          enum: [success, failed, reversed]
+          description: Must correspond to the top-level event.
+        recipient:
+          type: object
+          required: [recipient_code]
+          properties:
+            recipient_code:
+              allOf:
+                - $ref: '#/components/schemas/PaystackPrintableIdentity'
+              description: Must match the payout's stored provider recipient code.
+
+    AchievementProgress:
+      type: object
+      additionalProperties: false
+      required:
+        - unlocked_achievements
+        - next_available_achievements
+        - current_badge
+        - next_badge
+        - remaining_to_unlock_next_badge
+      properties:
+        unlocked_achievements:
+          type: array
+          items:
+            $ref: '#/components/schemas/AchievementName'
+          description: All achievements this customer has unlocked, in catalogue order.
+        next_available_achievements:
+          type: array
+          items:
+            $ref: '#/components/schemas/AchievementName'
+          description: At most the next active achievement in each incomplete active group.
+        current_badge:
+          allOf:
+            - $ref: '#/components/schemas/NullableBadgeName'
+          description: Highest badge already unlocked, or null before the first badge.
+        next_badge:
+          allOf:
+            - $ref: '#/components/schemas/NullableBadgeName'
+          description: Immediate next active badge, or null after the highest badge.
+        remaining_to_unlock_next_badge:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Achievements still needed for `next_badge`; zero when no next badge exists.
+      allOf:
+        - if:
+            properties:
+              next_badge:
+                type: 'null'
+          then:
+            properties:
+              remaining_to_unlock_next_badge:
+                const: 0
+
+    ApiError:
+      type: object
+      additionalProperties: false
+      required: [code, message]
+      properties:
+        code:
+          type: string
+          minLength: 1
+          description: Stable machine-readable error code.
+        message:
+          type: string
+          minLength: 1
+          description: Safe human-readable message with no internal diagnostic data.
+
+    ValidationError:
+      type: object
+      additionalProperties: false
+      required: [code, message, errors]
+      properties:
+        code:
+          const: validation_failed
+        message:
+          const: One or more fields are invalid.
+        errors:
+          type: object
+          minProperties: 1
+          description: Keys are submitted field names whose values failed validation.
+          additionalProperties:
+            type: array
+            minItems: 1
+            items:
+              type: string
+              minLength: 1
+
+    UnauthenticatedError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: unauthenticated
+            message:
+              const: A valid bearer token is required.
+
+    ForbiddenError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: forbidden
+            message:
+              const: You are not allowed to perform this action.
+
+    NotFoundError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: not_found
+            message:
+              const: The requested resource was not found.
+
+    RateLimitedError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: rate_limit_exceeded
+            message:
+              const: Too many requests were made. Try again later.
+
+    InternalServerError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: internal_server_error
+            message:
+              const: An unexpected error occurred.
+
+    InvalidCredentialsError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: invalid_credentials
+            message:
+              const: The provided credentials are incorrect.
+
+    PayoutAccountBusyError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: payout_account_busy
+            message:
+              const: Another payout account update is already in progress.
+
+    PayoutAccountConflictError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: payout_account_conflict
+            message:
+              const: The payout account conflicts with an existing destination.
+
+    PayoutAccountRejectedError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: payout_account_rejected
+            message:
+              const: The payout account could not be verified.
+
+    PaymentProviderInvalidResponseError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: payment_provider_invalid_response
+            message:
+              const: The payout account provider returned an invalid response.
+
+    PaymentProviderUnavailableError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: payment_provider_unavailable
+            message:
+              const: The payout account provider is temporarily unavailable.
+
+    PaymentProviderTimeoutError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: payment_provider_timeout
+            message:
+              const: The payout account provider did not respond in time.
+
+    PurchaseReferenceConflictError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: purchase_reference_conflict
+            message:
+              const: The external reference is already associated with a different purchase.
+
+    InvalidWebhookSignatureError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: invalid_webhook_signature
+            message:
+              const: The webhook signature is invalid.
+
+    WebhookPayloadTooLargeError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: webhook_payload_too_large
+            message:
+              const: The webhook payload is too large.
+
+    WebhookVerificationUnavailableError:
+      allOf:
+        - $ref: '#/components/schemas/ApiError'
+        - type: object
+          properties:
+            code:
+              const: webhook_verification_unavailable
+            message:
+              const: Webhook verification is temporarily unavailable.
