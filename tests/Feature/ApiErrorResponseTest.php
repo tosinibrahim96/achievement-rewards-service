@@ -4,23 +4,11 @@ declare(strict_types=1);
 
 use App\Http\Middleware\AssignRequestId;
 use App\Http\Responses\ApiErrorResponseFactory;
-use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Context;
 use Illuminate\Support\Facades\Route;
 use Illuminate\Testing\TestResponse;
-
-final class SelfRenderingTestException extends RuntimeException
-{
-    public function render(Request $request): JsonResponse
-    {
-        return response()->json(
-            ['message' => 'This shape must not escape.'],
-            409,
-            ['Retry-After' => '15'],
-        );
-    }
-}
+use Tests\Support\SelfRenderingTestException;
 
 beforeEach(function (): void {
     Route::get('/api/_testing/bad-request', static function (): never {

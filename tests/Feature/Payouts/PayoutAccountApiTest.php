@@ -3,15 +3,12 @@
 declare(strict_types=1);
 
 use App\Actions\Payouts\RegisterPayoutAccount;
-use App\Contracts\Payments\TransferRecipientGateway;
-use App\Data\Payments\CreatedTransferRecipient;
 use App\Data\Payouts\RegisterPayoutAccountInput;
 use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PaymentProviderFailure;
 use App\Enums\TokenAbility;
 use App\Events\PayoutAccountVerified;
-use App\Exceptions\Payments\PaymentProviderException;
 use App\Http\Middleware\AssignRequestId;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
 use App\Models\PayoutAccount;
@@ -21,30 +18,9 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Gate;
 use Monolog\Handler\TestHandler;
-use SensitiveParameter;
+use Tests\Support\FailingRecipientGateway;
 
 uses(DatabaseMigrations::class);
-
-final readonly class FailingRecipientGateway implements TransferRecipientGateway
-{
-    public function __construct(private PaymentProviderFailure $failure) {}
-
-    public function provider(): PaymentProvider
-    {
-        return PaymentProvider::Fake;
-    }
-
-    public function createRecipient(
-        #[SensitiveParameter] RegisterPayoutAccountInput $input,
-    ): CreatedTransferRecipient {
-        throw match ($this->failure) {
-            PaymentProviderFailure::RecipientRejected => PaymentProviderException::recipientRejected(),
-            PaymentProviderFailure::Unavailable => PaymentProviderException::unavailable(),
-            PaymentProviderFailure::MalformedResponse => PaymentProviderException::malformedResponse(),
-            PaymentProviderFailure::Timeout => PaymentProviderException::timeout(),
-        };
-    }
-}
 
 /** @return array<string, string> */
 function payoutAccountHeaders(User $user, array $abilities): array

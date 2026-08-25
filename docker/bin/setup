@@ -35,7 +35,12 @@ run_as_application_user() {
     HOME=/tmp COMPOSER_HOME=/tmp/composer su-exec "$project_uid:$project_gid" "$@"
 }
 
-run_as_application_user composer install --no-interaction --no-progress --prefer-dist
+run_as_application_user composer install \
+    --no-interaction \
+    --no-progress \
+    --prefer-dist \
+    --optimize-autoloader \
+    --strict-psr-autoloader
 
 if grep -Eq '^APP_KEY=$' .env; then
     run_as_application_user php artisan key:generate --force --ansi

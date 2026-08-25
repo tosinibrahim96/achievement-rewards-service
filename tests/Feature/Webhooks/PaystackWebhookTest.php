@@ -5,13 +5,9 @@ declare(strict_types=1);
 use App\Actions\Cashback\HandlePaystackWebhook;
 use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
-use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Payments\CashbackTransferRequest;
-use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\TransferBalance;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\CashbackTransferErrorCode;
-use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PayoutStatus;
 use App\Enums\ProviderWebhookReceiptResult;
@@ -34,37 +30,10 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Testing\TestResponse;
 use LogicException;
 use Mockery;
+use Tests\Support\CallbackWinningPaystackGateway;
 use Tests\TestCase;
 
 uses(DatabaseMigrations::class);
-
-final class CallbackWinningPaystackGateway implements CashbackTransferGateway
-{
-    /** @param Closure(CashbackTransferRequest): void $callback */
-    public function __construct(private readonly Closure $callback) {}
-
-    public function provider(): PaymentProvider
-    {
-        return PaymentProvider::Paystack;
-    }
-
-    public function availableBalance(Currency $currency): TransferBalance
-    {
-        return new TransferBalance(1_000_000, $currency);
-    }
-
-    public function initiateTransfer(CashbackTransferRequest $request): CashbackTransferResult
-    {
-        ($this->callback)($request);
-
-        return new CashbackTransferResult(
-            status: PayoutStatus::Pending,
-            transferCode: 'TRF_STALE_RESPONSE',
-            httpStatus: 200,
-            latencyMs: 9,
-        );
-    }
-}
 
 /** @return array{CashbackReward, Payout} */
 function paystackWebhookPayout(PayoutStatus $status = PayoutStatus::Pending): array

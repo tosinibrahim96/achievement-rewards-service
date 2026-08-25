@@ -4,15 +4,11 @@ declare(strict_types=1);
 
 use App\Actions\Cashback\ProcessCashbackPayout;
 use App\Actions\Cashback\RequestCashbackPayoutSupport;
-use App\Contracts\Payments\CashbackTransferGateway;
 use App\Data\Cashback\CashbackPayoutSupportRequest;
-use App\Data\Payments\CashbackTransferRequest;
 use App\Data\Payments\CashbackTransferResult;
-use App\Data\Payments\TransferBalance;
 use App\Enums\CashbackPayoutIssue;
 use App\Enums\CashbackRewardStatus;
 use App\Enums\CashbackTransferErrorCode;
-use App\Enums\Currency;
 use App\Enums\PaymentProvider;
 use App\Enums\PayoutStatus;
 use App\Infrastructure\Payments\PaymentProviderRegistry;
@@ -35,28 +31,9 @@ use Illuminate\Support\Facades\Notification;
 use LogicException;
 use Mockery;
 use RuntimeException;
+use Tests\Support\FixedSupportOutcomeGateway;
 
 uses(DatabaseMigrations::class);
-
-final class FixedSupportOutcomeGateway implements CashbackTransferGateway
-{
-    public function __construct(private readonly CashbackTransferResult $result) {}
-
-    public function provider(): PaymentProvider
-    {
-        return PaymentProvider::Fake;
-    }
-
-    public function availableBalance(Currency $currency): TransferBalance
-    {
-        return new TransferBalance(1_000_000, $currency);
-    }
-
-    public function initiateTransfer(CashbackTransferRequest $request): CashbackTransferResult
-    {
-        return $this->result;
-    }
-}
 
 /** @return array{CashbackReward, PayoutAccount} */
 function rewardForPayoutSupportTest(): array
